@@ -76,7 +76,7 @@ jobs:
         sed -i 's/<SentryUploadSymbols>true<\/SentryUploadSymbols>/<SentryUploadSymbols>false<\/SentryUploadSymbols>/g' Directory.Build.props
         dotnet build -c Release -p:SentryUploadSymbols=false
         # List the built assemblies to verify they exist
-        find $(pwd) -name "*.dll" | grep -E "NzbDrone.(Core|Common)"
+        find $(pwd) -name "*.dll" | grep -E "Lidarr.(Core|Common)"
 
     - name: Debug Lidarr structure
       run: |
@@ -189,6 +189,7 @@ jobs:
         git add .github/workflows/.build_number
         git commit -m "Increment build number to $((BUILD_NUMBER + 1)) [skip ci]"
         git push
+
 
 
 
