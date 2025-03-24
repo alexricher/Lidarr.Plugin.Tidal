@@ -24,12 +24,13 @@ namespace NzbDrone.Core.Download.Clients.Tidal
     {
         private readonly ICached<DateTime?> _startTimeCache;
         private readonly DownloadTaskQueue _taskQueue;
+        private readonly Logger _logger;
 
         public TidalProxy(ICacheManager cacheManager, Logger logger)
         {
-            _startTimeCache = cacheManager.GetCache<DateTime?>(GetType(), "startTimes");
-            _taskQueue = new(500, null, logger);
-
+            _startTimeCache = cacheManager.GetCache<DateTime?>(GetType(), "startTime");
+            _logger = logger;
+            _taskQueue = new DownloadTaskQueue(10, new TidalSettings(), logger);
             _taskQueue.StartQueueHandler();
         }
 
@@ -37,12 +38,13 @@ namespace NzbDrone.Core.Download.Clients.Tidal
         {
             _taskQueue.SetSettings(settings);
 
-            var listing = _taskQueue.GetQueueListing();
-            var completed = listing.Where(x => x.Status == DownloadItemStatus.Completed);
-            var queue = listing.Where(x => x.Status == DownloadItemStatus.Queued);
-            var current = listing.Where(x => x.Status == DownloadItemStatus.Downloading);
+            var items = _taskQueue.GetQueueListing();
+            var result = new List<DownloadClientItem>();
 
-            var result = completed.Concat(current).Concat(queue).Where(x => x != null).Select(ToDownloadClientItem).ToList();
+            foreach (var item in items)
+            {
+                result.Add(ToDownloadClientItem(item));
+            }
 
             return result;
         }
@@ -65,7 +67,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal
             return downloadItem.ID;
         }
 
-        private DownloadClientItem ToDownloadClientItem(DownloadItem x)
+        private DownloadClientItem ToDownloadClientItem(IDownloadItem x)
         {
             var format = x.Bitrate switch
             {
@@ -102,31 +104,26 @@ namespace NzbDrone.Core.Download.Clients.Tidal
             return item;
         }
 
-        private TimeSpan? GetRemainingTime(DownloadItem x)
+        private TimeSpan? GetRemainingTime(IDownloadItem x)
         {
-            if (x.Status == DownloadItemStatus.Completed)
-            {
-                _startTimeCache.Remove(x.ID);
+            if (x.TotalSize <= 0 || x.DownloadedSize <= 0)
                 return null;
-            }
 
-            if (x.Progress == 0)
-            {
+            // Estimate based on progress so far
+            var elapsedTime = DateTime.UtcNow - _startTimeCache.Get("download", () => DateTime.UtcNow);
+            var progress = x.DownloadedSize / (float)x.TotalSize;
+
+            if (progress <= 0)
                 return null;
-            }
 
-            var started = _startTimeCache.Find(x.ID);
-            if (started == null)
-            {
-                started = DateTime.UtcNow;
-                _startTimeCache.Set(x.ID, started);
+            // Check if elapsedTime is null before accessing Ticks
+            if (elapsedTime == null)
                 return null;
-            }
 
-            var elapsed = DateTime.UtcNow - started;
-            var progress = Math.Min(x.Progress, 1);
+            var estimatedTotalTime = TimeSpan.FromTicks((long)(elapsedTime.Value.Ticks / progress));
+            var remainingTime = estimatedTotalTime - elapsedTime.Value;
 
-            return TimeSpan.FromTicks((long)(elapsed.Value.Ticks * (1 - progress) / progress));
+            return remainingTime > TimeSpan.Zero ? remainingTime : TimeSpan.Zero;
         }
     }
 }

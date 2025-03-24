@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 using NLog;
 using NzbDrone.Common.Cache;
 using NzbDrone.Common.Http;
@@ -6,6 +7,7 @@ using NzbDrone.Core.Configuration;
 using NzbDrone.Core.Download.Clients.Tidal;
 using NzbDrone.Core.Parser;
 using NzbDrone.Plugin.Tidal;
+using FluentValidation.Results;
 
 namespace NzbDrone.Core.Indexers.Tidal
 {
@@ -33,30 +35,46 @@ namespace NzbDrone.Core.Indexers.Tidal
 
         public override IIndexerRequestGenerator GetRequestGenerator()
         {
-            if (!string.IsNullOrEmpty(Settings.ConfigPath))
+            if (string.IsNullOrEmpty(Settings.ConfigPath))
+            {
+                _logger.Warn("Config path is not set");
+                return new TidalRequestGenerator()
+                {
+                    Settings = Settings,
+                    Logger = _logger
+                };
+            }
+
+            try
             {
                 TidalAPI.Initialize(Settings.ConfigPath, _httpClient, _logger);
-                try
+                
+                var loginTask = TidalAPI.Instance.Client.Login(Settings.RedirectUrl);
+                loginTask.Wait();
+
+                // the url was submitted to the api so it likely cannot be reused
+                TidalAPI.Instance.Client.RegeneratePkceCodes();
+
+                var success = loginTask.Result;
+                if (!success)
                 {
-                    var loginTask = TidalAPI.Instance.Client.Login(Settings.RedirectUrl);
-                    loginTask.Wait();
-
-                    // the url was submitted to the api so it likely cannot be reused
-                    TidalAPI.Instance.Client.RegeneratePkceCodes();
-
-                    var success = loginTask.Result;
-                    if (!success)
+                    _logger.Warn("Tidal login failed");
+                    return new TidalRequestGenerator()
                     {
-                        return null;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.Error($"Tidal login failed:\n{ex}");
+                        Settings = Settings,
+                        Logger = _logger
+                    };
                 }
             }
-            else
-                return null;
+            catch (Exception ex)
+            {
+                _logger.Error($"Tidal login failed:\n{ex}");
+                return new TidalRequestGenerator()
+                {
+                    Settings = Settings,
+                    Logger = _logger
+                };
+            }
 
             return new TidalRequestGenerator()
             {
@@ -71,6 +89,39 @@ namespace NzbDrone.Core.Indexers.Tidal
             {
                 Settings = Settings
             };
+        }
+
+        protected override async Task<ValidationFailure> TestConnection()
+        {
+            if (string.IsNullOrEmpty(Settings.ConfigPath))
+            {
+                return new ValidationFailure("ConfigPath", "Config path is required");
+            }
+
+            try
+            {
+                TidalAPI.Initialize(Settings.ConfigPath, _httpClient, _logger);
+                
+                var loginTask = TidalAPI.Instance.Client.Login(Settings.RedirectUrl);
+                await loginTask;
+
+                // the url was submitted to the api so it likely cannot be reused
+                TidalAPI.Instance.Client.RegeneratePkceCodes();
+
+                var success = loginTask.Result;
+                if (!success)
+                {
+                    return new ValidationFailure(string.Empty, "Failed to login to Tidal. Please check your redirect URL.");
+                }
+
+                // If login is successful, continue with the base test
+                return await base.TestConnection();
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error testing Tidal connection");
+                return new ValidationFailure(string.Empty, $"Error connecting to Tidal: {ex.Message}");
+            }
         }
     }
 }

@@ -1,85 +1,77 @@
 name: Build Plugin
+
 on:
   push:
-    branches:
-      - main
-    tags-ignore:
-      - '**'
+    branches: [ main ]
   pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 env:
-  # Stop wasting time caching packages
-  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
-  # Disable sending usage data to Microsoft
-  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  MAJOR_VERSION: 10
+  MINOR_VERSION: 0
+  PATCH_VERSION: 2
   PLUGIN_NAME: Lidarr.Plugin.Tidal
-  PLUGIN_VERSION: 10.0.1.${{ github.run_number }}
   MINIMUM_LIDARR_VERSION: 2.2.4.4129
   DOTNET_VERSION: 8.0.404
+  FRAMEWORK: net6.0
+  RUNTIME: win-x64
 
 jobs:
   build:
-    strategy:
-      matrix:
-        framework: [ net6.0 ]
     runs-on: ubuntu-latest
+    
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: true
-          fetch-depth: 0
-          tags: true
-      - name: Setup .NET Core
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-      - name: Create global.json
-        run: |
-          echo '{"sdk":{"version": "${{ env.DOTNET_VERSION }}"}}' > ./global.json
-      - name: Generate metadata
-        id: gen_meta
-        run: |
-          echo "branch=${GITHUB_REF#refs/heads/}" | tr '/' '-'  >> $GITHUB_OUTPUT
-      - name: Update Version Info
-        run: |
-          sed -i'' -e "s/<AssemblyVersion>[0-9.*]\+<\/AssemblyVersion>/<AssemblyVersion>$PLUGIN_VERSION<\/AssemblyVersion>/g" src/Directory.Build.props
-          sed -i'' -e "s/<AssemblyConfiguration>[\$()A-Za-z-]\+<\/AssemblyConfiguration>/<AssemblyConfiguration>${{ steps.gen_meta.outputs.branch }}<\/AssemblyConfiguration>/g" src/Directory.Build.props
-          sed -i'' -e "s/<AssemblyVersion>[0-9.*]\+<\/AssemblyVersion>/<AssemblyVersion>$MINIMUM_LIDARR_VERSION<\/AssemblyVersion>/g" ext/Lidarr/src/Directory.Build.props
-      - name: Build
-        run: |
-          dotnet restore src/*.sln
-          dotnet build src/*.sln -c Release -f ${{ matrix.framework }}
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.PLUGIN_NAME }}.${{ matrix.framework }}
-          path: ./_plugins/net6.0/${{ env.PLUGIN_NAME }}/${{ env.PLUGIN_NAME }}.*
-      - name: Generate Changelog
-        if: github.ref == 'refs/heads/main'
-        run: |
-          echo "Changelog:" > changelog.txt
-          git log --oneline $(git describe --tags --abbrev=0)..HEAD | awk '{print "- " substr($0, index($0,$2))}' >> changelog.txt
-      - name: Display Changelog
-        if: github.ref == 'refs/heads/main'
-        run: cat changelog.txt
-      - name: Zip Plugin
-        if: github.ref == 'refs/heads/main'
-        run: |
-          sudo apt update && sudo apt install -y p7zip-full
-          7z a -tzip ${{ env.PLUGIN_NAME }}.net6.0.zip ./_plugins/net6.0/${{ env.PLUGIN_NAME }}/${{ env.PLUGIN_NAME }}.*
-      - name: Upload Release Asset
-        uses: softprops/action-gh-release@v2
-        if: github.ref == 'refs/heads/main'
-        with:
-          tag_name: ${{ env.PLUGIN_VERSION }}
-          name: ${{ env.PLUGIN_VERSION }}
-          body_path: changelog.txt
-          draft: true
-          prerelease: false
-          files: |
-            ${{ env.PLUGIN_NAME }}.net6.0.zip
+    - uses: actions/checkout@v4
+    
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+    
+    - name: Get build number
+      id: build_number
+      run: |
+        if [ -f .github/workflows/.build_number ]; then
+          echo "BUILD_NUMBER=$(cat .github/workflows/.build_number)" >> $GITHUB_ENV
+        else
+          echo "BUILD_NUMBER=1" >> $GITHUB_ENV
+        fi
+    
+    - name: Build
+      run: |
+        VERSION="${{ env.MAJOR_VERSION }}.${{ env.MINOR_VERSION }}.${{ env.PATCH_VERSION }}.${{ env.BUILD_NUMBER }}"
+        echo "Building version $VERSION"
+        
+        dotnet publish src/${{ env.PLUGIN_NAME }}/${{ env.PLUGIN_NAME }}.csproj \
+          -c Release \
+          -f ${{ env.FRAMEWORK }} \
+          -r ${{ env.RUNTIME }} \
+          --self-contained false \
+          -p:Version=$VERSION \
+          -o _output
+    
+    - name: Package
+      run: |
+        mkdir -p _output/${{ env.PLUGIN_NAME }}
+        mv _output/* _output/${{ env.PLUGIN_NAME }}/ 2>/dev/null || true
+        
+        mkdir -p _artifacts
+        cd _output
+        zip -r ../_artifacts/${{ env.PLUGIN_NAME }}.${{ env.FRAMEWORK }}.zip ${{ env.PLUGIN_NAME }}
+    
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.PLUGIN_NAME }}
+        path: _artifacts/${{ env.PLUGIN_NAME }}.${{ env.FRAMEWORK }}.zip
+    
+    - name: Increment build number
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: |
+        echo "$((BUILD_NUMBER + 1))" > .github/workflows/.build_number
+        git config --global user.name 'GitHub Actions'
+        git config --global user.email 'actions@github.com'
+        git add .github/workflows/.build_number
+        git commit -m "Increment build number to $((BUILD_NUMBER + 1)) [skip ci]"
+        git push

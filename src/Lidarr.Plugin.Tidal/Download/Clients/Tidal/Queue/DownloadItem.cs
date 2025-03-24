@@ -14,7 +14,29 @@ using TidalSharp.Data;
 
 namespace NzbDrone.Core.Download.Clients.Tidal.Queue
 {
-    public class DownloadItem
+    /// <summary>
+    /// Interface for download item to make it mockable in tests
+    /// </summary>
+    public interface IDownloadItem
+    {
+        string ID { get; }
+        string Title { get; }
+        string Artist { get; }
+        string Album { get; }
+        bool Explicit { get; }
+        RemoteAlbum RemoteAlbum { get; }
+        string DownloadFolder { get; }
+        AudioQuality Bitrate { get; }
+        DownloadItemStatus Status { get; set; }
+        float Progress { get; }
+        long DownloadedSize { get; }
+        long TotalSize { get; }
+        int FailedTracks { get; }
+        
+        Task DoDownload(TidalSettings settings, Logger logger, CancellationToken cancellation = default);
+    }
+
+    public class DownloadItem : IDownloadItem
     {
         public static async Task<DownloadItem> From(RemoteAlbum remoteAlbum)
         {
@@ -53,6 +75,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
 
         public string Title { get; private set; }
         public string Artist { get; private set; }
+        public string Album { get; private set; }
         public bool Explicit { get; private set; }
 
         public RemoteAlbum RemoteAlbum {  get; private set; }
@@ -72,7 +95,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
         private TidalURL _tidalUrl;
         private JObject _tidalAlbum;
 
-        public async Task DoDownload(TidalSettings settings, Logger logger, CancellationToken cancellation = default)
+        public virtual async Task DoDownload(TidalSettings settings, Logger logger, CancellationToken cancellation = default)
         {
             List<Task> tasks = new();
             using SemaphoreSlim semaphore = new(3, 3);
@@ -222,6 +245,11 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
             return filePath;
         }
 
+        private async Task CreateLrcFile(string lrcFilePath, string syncLyrics)
+        {
+            await File.WriteAllTextAsync(lrcFilePath, syncLyrics);
+        }
+
         private async Task SetTidalData(CancellationToken cancellation = default)
         {
             if (_tidalUrl.EntityType != EntityType.Album)
@@ -243,13 +271,9 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
 
             Title = album["title"]!.ToString();
             Artist = album["artist"]!["name"]!.ToString();
+            Album = album["title"]!.ToString(); // Added Album property implementation
             Explicit = album["explicit"]!.Value<bool>();
             TotalSize = _tracks.Sum(t => t.chunks);
-        }
-
-        private static async Task CreateLrcFile(string lrcFilePath, string syncLyrics)
-        {
-            await File.WriteAllTextAsync(lrcFilePath, syncLyrics);
         }
     }
 }
