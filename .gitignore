@@ -9,6 +9,17 @@ _artifacts/
 _temp*/
 _rawPackage/
 
+# Exclude output dirs anywhere in the repo
+**/[Bb]in/
+**/[Oo]bj/
+**/_output/
+**/_plugins/
+**/_artifacts/
+**/_temp*/
+**/_rawPackage/
+**/ext/Lidarr/_plugins/
+**/output/
+
 # Build artifacts
 *.zip
 .build_number
