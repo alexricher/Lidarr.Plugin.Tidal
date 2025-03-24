@@ -18,8 +18,9 @@ env:
   DOTNET_VERSION: 8.0.404
   FRAMEWORK: net6.0
   RUNTIME: win-x64
-  SENTRY_DSN: ''  # Empty value to prevent warnings
-  SENTRY_AUTH_TOKEN: ''  # Empty value to prevent warnings
+  SENTRY_DSN: ''
+  SENTRY_AUTH_TOKEN: ''
+  SENTRY_DISABLED: 'true'  # Add this line to disable Sentry
 
 jobs:
   build:
@@ -71,7 +72,9 @@ jobs:
     - name: Build Lidarr dependencies
       run: |
         cd ext/Lidarr/src
-        dotnet build -c Release
+        # Disable Sentry in Directory.Build.props
+        sed -i 's/<SentryUploadSymbols>true<\/SentryUploadSymbols>/<SentryUploadSymbols>false<\/SentryUploadSymbols>/g' Directory.Build.props
+        dotnet build -c Release -p:SentryUploadSymbols=false
         # List the built assemblies to verify they exist
         find $(pwd) -name "*.dll" | grep -E "NzbDrone.(Core|Common)"
 
@@ -186,6 +189,9 @@ jobs:
         git add .github/workflows/.build_number
         git commit -m "Increment build number to $((BUILD_NUMBER + 1)) [skip ci]"
         git push
+
+
+
 
 
 
