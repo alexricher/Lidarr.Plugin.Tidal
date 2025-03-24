@@ -191,32 +191,37 @@ Alternatively, you can install directly from GitHub:
 
 ### Behavior Profiles
 
-The plugin includes several predefined behavior profiles to simulate different types of users:
+The plugin includes predefined behavior profiles to help you quickly configure natural download patterns:
 
-1. **Balanced** - Default profile with moderate download speeds and natural pauses
-   - Medium session duration (120 minutes)
-   - Medium breaks (60 minutes)
-   - Moderate delays between tracks and albums
-   - Some natural variations in listening patterns
+#### 🔄 Balanced Profile
+- **⏱️ Session Duration**: 120 minutes
+- **⏸️ Break Duration**: 60 minutes
+- **⏭️ Track-to-Track Delay**: 1-10 seconds
+- **📀 Album-to-Album Delay**: 30-180 seconds
+- **🎭 Simulate Listening Patterns**: Yes
+- **💿 Complete Albums**: Yes
+- **👨‍🎤 Preserve Artist Context**: Yes
+- **🔢 Sequential Track Order**: Yes
 
-2. **Casual Listener** - Slower downloads with longer pauses, mimicking occasional listening
-   - Shorter sessions (60 minutes)
-   - Longer breaks (120 minutes)
-   - Higher probability of skipping tracks
-   - More variation in listening duration
-   - Fewer parallel downloads
+#### 🛋️ Casual Listener Profile
+- **⏱️ Session Duration**: 60 minutes
+- **⏸️ Break Duration**: 120 minutes
+- **⏭️ Track-to-Track Delay**: 5-30 seconds
+- **📀 Album-to-Album Delay**: 60-300 seconds
+- **🎭 Simulate Listening Patterns**: Yes
+- **💿 Complete Albums**: No
+- **👨‍🎤 Preserve Artist Context**: No
+- **🔢 Sequential Track Order**: No
 
-3. **Music Enthusiast** - Faster downloads with shorter pauses, simulating active music collection
-   - Longer sessions (180 minutes)
-   - Shorter breaks (30 minutes)
-   - Lower track skipping probability
-   - Higher album completion rate
-   - More genre-focused selection patterns
-
-4. **Custom** - Fully customizable settings for advanced users
-   - All behavior parameters manually configurable
-   - Fine-grained control over every aspect of download behavior
-   - Complete flexibility for specialized use cases
+#### 🎧 Music Enthusiast Profile
+- **⏱️ Session Duration**: 180 minutes
+- **⏸️ Break Duration**: 30 minutes
+- **⏭️ Track-to-Track Delay**: 0.5-5 seconds
+- **📀 Album-to-Album Delay**: 15-90 seconds
+- **🎭 Simulate Listening Patterns**: Yes
+- **💿 Complete Albums**: Yes
+- **👨‍🎤 Preserve Artist Context**: Yes
+- **🔢 Sequential Track Order**: Yes
 
 Each profile adjusts various parameters to create a realistic download pattern that helps avoid detection by Tidal's systems.
 
@@ -568,6 +573,8 @@ The following libraries have been merged into the final plugin assembly due to L
 - [Newtonsoft.Json](https://github.com/JamesNK/Newtonsoft.Json) - MIT license. See [LICENSE](https://github.com/JamesNK/Newtonsoft.Json/blob/master/LICENSE.md).
 - [TagLibSharp](https://github.com/mono/taglib-sharp) - LGPL-2.1 license. See [COPYING](https://github.com/mono/taglib-sharp/blob/main/COPYING).
 - [TidalSharp](https://github.com/TrevTV/TidalSharp) - GPL-3.0 license. See [LICENSE](https://github.com/TrevTV/TidalSharp/blob/main/LICENSE).
+
+
 
 
 

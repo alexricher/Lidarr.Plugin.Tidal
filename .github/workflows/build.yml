@@ -18,6 +18,8 @@ env:
   DOTNET_VERSION: 8.0.404
   FRAMEWORK: net6.0
   RUNTIME: win-x64
+  SENTRY_DSN: ''  # Empty value to prevent warnings
+  SENTRY_AUTH_TOKEN: ''  # Empty value to prevent warnings
 
 jobs:
   build:
@@ -73,6 +75,17 @@ jobs:
         # List the built assemblies to verify they exist
         find $(pwd) -name "*.dll" | grep -E "NzbDrone.(Core|Common)"
 
+    - name: Debug Lidarr structure
+      run: |
+        echo "Checking Lidarr project structure:"
+        find ext/Lidarr/src -name "*.csproj" | sort
+        
+        echo "Checking if NzbDrone.Core.dll exists:"
+        find ext/Lidarr -name "NzbDrone.Core.dll"
+        
+        echo "Checking TidalSharp project references:"
+        grep -r "ProjectReference" src/TidalSharp/TidalSharp.csproj
+
     - name: Debug TidalSharp references
       run: |
         # Check TidalSharp project file
@@ -95,6 +108,12 @@ jobs:
           -p:Version=${{ env.PLUGIN_VERSION }} \
           --verbosity normal
     
+    - name: Restore dependencies
+      run: dotnet restore src/Lidarr.Plugin.Tidal.sln
+    
+    - name: Test Solution
+      run: dotnet build src/Lidarr.Plugin.Tidal.sln --no-restore
+    
     - name: Build
       run: |
         echo "Building version ${{ env.PLUGIN_VERSION }}"
@@ -105,7 +124,8 @@ jobs:
           -r ${{ env.RUNTIME }} \
           --self-contained false \
           -p:Version=${{ env.PLUGIN_VERSION }} \
-          -o _output
+          -o _output \
+          --verbosity detailed || { echo "Build failed with errors"; exit 1; }
     
     - name: Package
       run: |
@@ -166,6 +186,7 @@ jobs:
         git add .github/workflows/.build_number
         git commit -m "Increment build number to $((BUILD_NUMBER + 1)) [skip ci]"
         git push
+
 
 
 

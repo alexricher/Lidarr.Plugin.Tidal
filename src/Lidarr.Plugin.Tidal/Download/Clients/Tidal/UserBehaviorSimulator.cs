@@ -734,7 +734,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal
                 return false;
             }
             
-            int probability = Math.Clamp(settings.SkipProbability, 0, 100);
+            int probability = Math.Clamp((int)(settings.SkipProbability * 100), 0, 100);
             return _random.Next(100) < probability;
         }
         
