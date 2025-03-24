@@ -119,14 +119,15 @@ jobs:
 
     - name: Create Release
       uses: softprops/action-gh-release@v2
-      if: ${{ startsWith(github.ref, 'refs/tags/') || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+      if: startsWith(github.ref, 'refs/tags/')
       with:
-        tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}', env.PLUGIN_VERSION) }}
+        tag_name: ${{ github.ref_name }}
         name: Version ${{ env.PLUGIN_VERSION }}
         body_path: changelog.txt
         draft: false
         prerelease: false
-        files: _artifacts/${{ env.PLUGIN_NAME }}.${{ env.FRAMEWORK }}.zip
+        files: |
+          _artifacts/${{ env.PLUGIN_NAME }}.${{ env.FRAMEWORK }}.zip
     
     - name: Increment build number
       if: ${{ !startsWith(github.ref, 'refs/tags/') && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -137,6 +138,7 @@ jobs:
         git add .github/workflows/.build_number
         git commit -m "Increment build number to $((BUILD_NUMBER + 1)) [skip ci]"
         git push
+
 
 
 
