@@ -59,6 +59,11 @@ jobs:
       run: |
         echo "PLUGIN_VERSION=${{ env.MAJOR_VERSION }}.${{ env.MINOR_VERSION }}.${{ env.PATCH_VERSION }}.${{ env.BUILD_NUMBER }}" >> $GITHUB_ENV
     
+    - name: Build Lidarr dependencies
+      run: |
+        cd ext/Lidarr/src
+        dotnet build -c Release
+    
     - name: Build
       run: |
         echo "Building version ${{ env.PLUGIN_VERSION }}"
@@ -130,6 +135,8 @@ jobs:
         git add .github/workflows/.build_number
         git commit -m "Increment build number to $((BUILD_NUMBER + 1)) [skip ci]"
         git push
+
+
 
 
 
