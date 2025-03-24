@@ -70,6 +70,30 @@ jobs:
       run: |
         cd ext/Lidarr/src
         dotnet build -c Release
+        # List the built assemblies to verify they exist
+        find $(pwd) -name "*.dll" | grep -E "NzbDrone.(Core|Common)"
+
+    - name: Debug TidalSharp references
+      run: |
+        # Check TidalSharp project file
+        echo "TidalSharp project file contents:"
+        cat src/TidalSharp/TidalSharp.csproj
+        
+        # Check if Lidarr assemblies exist in expected locations
+        echo "Checking for Lidarr assemblies:"
+        find ext/Lidarr/src -name "NzbDrone.Core.dll"
+        find ext/Lidarr/src -name "NzbDrone.Common.dll"
+        
+        # Try to restore packages explicitly
+        dotnet restore src/TidalSharp/TidalSharp.csproj --verbosity normal
+
+    - name: Build TidalSharp
+      run: |
+        # Build TidalSharp separately first with verbose output
+        dotnet build src/TidalSharp/TidalSharp.csproj \
+          -c Release \
+          -p:Version=${{ env.PLUGIN_VERSION }} \
+          --verbosity normal
     
     - name: Build
       run: |
@@ -142,6 +166,8 @@ jobs:
         git add .github/workflows/.build_number
         git commit -m "Increment build number to $((BUILD_NUMBER + 1)) [skip ci]"
         git push
+
+
 
 
 
