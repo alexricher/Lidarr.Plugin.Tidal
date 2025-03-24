@@ -31,6 +31,13 @@ jobs:
       with:
         fetch-depth: 0
         fetch-tags: true
+        submodules: recursive  # Ensure submodules are checked out
+    
+    - name: Update Lidarr submodule
+      run: |
+        git submodule update --init --recursive
+        git -C ext/Lidarr checkout plugins  # Ensure we're on the plugins branch
+        git -C ext/Lidarr pull origin plugins  # Pull latest changes
     
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
@@ -135,6 +142,8 @@ jobs:
         git add .github/workflows/.build_number
         git commit -m "Increment build number to $((BUILD_NUMBER + 1)) [skip ci]"
         git push
+
+
 
 
 
