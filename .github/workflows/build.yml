@@ -95,6 +95,16 @@ jobs:
         fi
         cat changelog.txt
     
+    - name: Debug file existence
+      run: |
+        ls -la _artifacts/
+        echo "Checking for file: _artifacts/${{ env.PLUGIN_NAME }}.${{ env.FRAMEWORK }}.zip"
+        if [ -f "_artifacts/${{ env.PLUGIN_NAME }}.${{ env.FRAMEWORK }}.zip" ]; then
+          echo "File exists"
+        else
+          echo "File does not exist"
+        fi
+
     - name: Create Release
       uses: softprops/action-gh-release@v2
       if: ${{ startsWith(github.ref, 'refs/tags/') || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
@@ -116,3 +126,5 @@ jobs:
         git add .github/workflows/.build_number
         git commit -m "Increment build number to $((BUILD_NUMBER + 1)) [skip ci]"
         git push
+
+

@@ -69,80 +69,32 @@ A powerful plugin that integrates Tidal music streaming service with Lidarr, ena
 
 ## 📋 Requirements
 
-- Lidarr running on the `plugins` branch
+- Lidarr running on the `plugins` branch (version 2.2.4.4129 or higher)
 - FFMPEG (optional, for audio conversion features)
 - Valid Tidal subscription
 
 ## 🚀 Installation
 
-This plugin requires your Lidarr setup to be using the `plugins` branch. 
-
-### Docker Setup
-
-```yml
-lidarr:
-  image: ghcr.io/hotio/lidarr:pr-plugins
-  container_name: lidarr
-  environment:
-    - PUID:100
-    - PGID:1001
-    - TZ:Etc/UTC
-  volumes:
-    - /path/to/config/:/config
-    - /path/to/downloads/:/downloads
-    - /path/to/music:/music
-  ports:
-    - 8686:8686
-  restart: unless-stopped
-```
-
-### With FFMPEG Support
-
-To enable audio conversion features, include FFMPEG in your container:
-
-```yml
-lidarr:
-  build:
-    context: /path/to/directory/containing/dockerfile
-    dockerfile: Dockerfile
-  container_name: lidarr
-  environment:
-    - PUID:1000
-    - PGID:1001
-    - TZ:Etc/UTC
-  volumes:
-    - /path/to/config/:/config
-    - /path/to/downloads/:/data/downloads
-    - /path/to/tidal/config/:/data/tidal-config
-    - /path/to/music:/data/music
-  ports:
-    - 8686:8686
-  restart: unless-stopped
-```
-
-```Dockerfile
-FROM ghcr.io/hotio/lidarr:pr-plugins
-
-RUN apk add --no-cache ffmpeg
-```
+This plugin requires your Lidarr setup to be using the `plugins` branch.
 
 ### Plugin Installation Steps
 
-1. In Lidarr, go to `System -> Plugins`, paste `https://github.com/alexricher/Lidarr.Plugin.Tidal` into the GitHub URL box, and press Install.
-2. Go into the Indexer settings and press Add. In the modal, choose `Tidal` (under Other at the bottom).
-3. Enter a path to use to store user data, press Test, it will error, press Cancel.
-4. Refresh the page, then re-open the Add screen and choose Tidal again.
-5. There should now be a `Tidal URL` setting with a URL in it. Open that URL in a new tab.
-6. In the new tab, log in to Tidal, then press `Yes, continue`. It will then bring you to a page labeled "Oops." Copy the new URL for that tab (something like `https://tidal.com/android/login/auth?code=[VERY LONG CODE]`).
-   - ⚠️ Do NOT share this URL with people as it grants people access to your account.
-   - ⚠️ Redirect URLs are NOT reusable. If you need to sign in again, make sure to use a new Tidal URL from the settings, they are regenerated semi-often.
-7. Enter a path to use to store user data and paste the copied Tidal URL into the `Redirect Url` option. Then press Save.
-8. Go into the Download Client settings and press Add. In the modal, choose `Tidal` (under Other at the bottom).
-9. Put the path you want to download tracks to and fill out the other settings to your choosing.
-   - If you want `.lrc` files to be saved, go into the Media Management settings and enable Import Extra Files and add `lrc` to the list.
-   - Make sure to only enable the FFMPEG settings if you are sure that FFMPEG is available to Lidarr, it may cause issues otherwise.
-10. Go into the Profile settings and find the Delay Profiles. On each (by default there is only one), click the wrench on the right and toggle Tidal on.
-11. Optional: To prevent Lidarr from downloading all track files into the base artist folder rather than into their own separate album folder, go into the Media Management settings and enable Rename Tracks. You can change the formats to your liking, but it helps to let each album have their own folder.
+1. In Lidarr, go to `System -> Plugins`
+2. Click the "Browse" button
+3. Select the plugin zip file you downloaded
+4. Click "Install"
+5. Restart Lidarr when prompted
+6. Go to `Settings -> Indexers` and click "+" to add a new indexer
+7. Select "Tidal" from the list
+8. Configure the plugin with your Tidal credentials
+9. Save the settings and start using Tidal with Lidarr!
+
+Alternatively, you can install directly from GitHub:
+
+1. In Lidarr, go to `System -> Plugins`
+2. Paste `https://github.com/alexricher/Lidarr.Plugin.Tidal` into the GitHub URL box
+3. Click "Install"
+4. Follow the on-screen instructions to complete the setup
 
 ## ⚙️ Configuration Options
 
@@ -427,43 +379,18 @@ Stay tuned for the release of TidalDownloadViewer in an upcoming version!
 
 ## 🏠 Container-Friendly Architecture
 
-Our plugin implements a sophisticated error-tolerant architecture optimized for containerized environments:
+Our plugin implements an error-handling architecture optimized for containerized environments:
 
-- 📁 **Hierarchical Path Resolution**: When accessing storage locations, the system tries paths in this order:
-  1. User-configured paths in settings
-  2. Home directory path (~/.lidarr/TidalPlugin)
-  3. AppData directory (ApplicationData/Lidarr/TidalPlugin)
-  4. System temporary directory (fallback of last resort)
-  
-- 🛡️ **Lazy Component Initialization**: Components are initialized only when needed:
-  - Download status manager initializes on first status operation
-  - TidalProxy starts with default settings, then updates when real settings available
-  - Download task queue buffers tasks until proper initialization
-
-- ⚙️ **Fail-Safe Configuration**: Protections against configuration issues:
-  - Null settings handled gracefully throughout the codebase
-  - Container permission issues detected and worked around
-  - Test writes performed before committing to paths
-  - Status files persist across container restarts
-
-- 📊 **Status Preservation**: Download status information is maintained across sessions:
-  - Status files written periodically to the most accessible location
-  - Statistics tracked even during error conditions
-  - Multiple fallback mechanisms for status storage
-
-- 🔄 **Recovery Mechanisms**: The system includes various recovery strategies:
-  - Automatic retry for throttled downloads
-  - Exponential backoff when rate limiting detected
-  - Automatic session rotation to avoid detection
-  - Safe re-initialization after errors
+- **Path Resolution**: Automatically detects and adapts to container environments
+- **Permission Handling**: Gracefully handles permission issues with fallback mechanisms
+- **Error Recovery**: Implements robust error handling for network and I/O operations
+- **Diagnostic Logging**: Detailed logging to help troubleshoot container-specific issues
 
 ## 🛠️ Development
 
 ### Building the Plugin
 
-This repository includes a PowerShell script to help with building and managing the plugin.
-
-To build the plugin locally:
+To build the plugin locally, use the build script in the repository:
 
 ```powershell
 .\build.ps1
@@ -472,10 +399,10 @@ To build the plugin locally:
 The build script supports several parameters:
 
 ```powershell
-.\build.ps1 -BaseVersion "10.1.0" -Verbose                # Build with custom version
-.\build.ps1 -CopyToLocalPath:$false -Verbose              # Build without copying to local path
-.\build.ps1 -CreateZip:$false -Verbose                    # Build without creating zip file
-.\build.ps1 -CleanPreviousBuilds:$false -Verbose          # Build without cleaning previous builds
+.\build.ps1 -PluginVersion "10.0.2" -Verbose                # Build with custom version
+.\build.ps1 -CopyToLidarr $false -Verbose                   # Build without copying to Lidarr
+.\build.ps1 -CreateZip $true -Verbose                       # Create zip file
+.\build.ps1 -Clean $true -Verbose                           # Clean previous builds
 ```
 
 ### Creating Releases
@@ -487,10 +414,11 @@ This repository uses GitHub Actions to automate the release process. There are t
 
 To create a new release:
 
-1. Use the `create_release.ps1` script to create and push a new tag:
+1. Create and push a new tag with the version number:
 
 ```powershell
-.\create_release.ps1 -Version "10.0.2"
+git tag v10.0.2
+git push origin v10.0.2
 ```
 
 2. The GitHub Actions workflow will automatically:
@@ -566,23 +494,24 @@ These components communicate through well-defined interfaces with proper error h
 
 ## 📜 Versioning
 
-This plugin uses a date-based versioning approach:
+This plugin uses an incremental build number versioning approach:
 
-1. The base version is defined in `src/Directory.Build.props`:
-   ```xml
-   <PropertyGroup>
-     <FileVersion>10.0.1</FileVersion>
-     <AssemblyVersion>10.0.1</AssemblyVersion>
-     <Version>10.0.1</Version>
-   </PropertyGroup>
+1. The base version is defined in the GitHub workflow file (`.github/workflows/build.yml`):
+   ```yaml
+   env:
+     MAJOR_VERSION: 10
+     MINOR_VERSION: 0
+     PATCH_VERSION: 2
    ```
 
-2. During the build process (both local and CI), a date-based build number is appended to this base version:
-   - The build number format is `yyMMdd` (year, month, day)
-   - Example: `230516` for May 16, 2023
+2. During the build process, an incremental build number is appended to this base version:
+   - The build number is stored in `.github/workflows/.build_number`
+   - It's incremented by 1 with each successful build on the main branch
 
-3. The final version format is: `{BaseVersion}.{BuildNumber}`
-   - Example: `10.0.1.230516` (build on May 16, 2023)
+3. The final version format is: `{MAJOR_VERSION}.{MINOR_VERSION}.{PATCH_VERSION}.{BUILD_NUMBER}`
+   - Example: `10.0.2.42` (build #42)
+
+For tagged releases, the version is taken directly from the tag (e.g., `v10.0.2` becomes version `10.0.2`).
 
 This approach ensures that:
 - Each build has a unique, chronologically sortable version number
@@ -639,3 +568,7 @@ The following libraries have been merged into the final plugin assembly due to L
 - [Newtonsoft.Json](https://github.com/JamesNK/Newtonsoft.Json) - MIT license. See [LICENSE](https://github.com/JamesNK/Newtonsoft.Json/blob/master/LICENSE.md).
 - [TagLibSharp](https://github.com/mono/taglib-sharp) - LGPL-2.1 license. See [COPYING](https://github.com/mono/taglib-sharp/blob/main/COPYING).
 - [TidalSharp](https://github.com/TrevTV/TidalSharp) - GPL-3.0 license. See [LICENSE](https://github.com/TrevTV/TidalSharp/blob/main/LICENSE).
+
+
+
+
