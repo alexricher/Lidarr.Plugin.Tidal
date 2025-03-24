@@ -109,29 +109,47 @@ public class Downloader
 
     public async Task<(string? plainLyrics, string? syncLyrics)?> FetchLyricsFromTidal(string trackId, CancellationToken token = default)
     {
-        var lyrics = await _api.GetTrackLyrics(trackId, token);
-        if (lyrics == null)
-            return null;
+        try
+        {
+            var lyrics = await _api.GetTrackLyrics(trackId, token);
+            if (lyrics == null)
+                return null;
 
-        return (lyrics.Lyrics, lyrics.Subtitles);
+            return (lyrics.Lyrics, lyrics.Subtitles);
+        }
+        catch (APIException ex)
+        {
+            // Log the exception but don't propagate it upward
+            Console.WriteLine($"Error fetching lyrics from Tidal: {ex.Message}");
+            return null;
+        }
     }
 
     public async Task<(string? plainLyrics, string? syncLyrics)?> FetchLyricsFromLRCLIB(string instance, string trackName, string artistName, string albumName, int duration, CancellationToken token = default)
     {
-        var requestResource = $"/api/get?artist_name={Uri.EscapeDataString(artistName)}&track_name={Uri.EscapeDataString(trackName)}&album_name={Uri.EscapeDataString(albumName)}&duration={duration}";
-        var request = _client
-            .BuildRequest($"https://{instance}")
-            .Resource(requestResource);
-        var response = await _client.ProcessRequestAsync(request);
-
-        if (!response.HasHttpError)
+        try
         {
-            var content = response.Content;
-            var json = JObject.Parse(content);
-            return (json["plainLyrics"]?.ToString(), json["syncedLyrics"]?.ToString());
-        }
+            var requestResource = $"/api/get?artist_name={Uri.EscapeDataString(artistName)}&track_name={Uri.EscapeDataString(trackName)}&album_name={Uri.EscapeDataString(albumName)}&duration={duration}";
+            var request = _client
+                .BuildRequest($"https://{instance}")
+                .Resource(requestResource);
+            var response = await _client.ProcessRequestAsync(request);
 
-        return null;
+            if (!response.HasHttpError)
+            {
+                var content = response.Content;
+                var json = JObject.Parse(content);
+                return (json["plainLyrics"]?.ToString(), json["syncedLyrics"]?.ToString());
+            }
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            // Log the exception but don't fail the download
+            Console.WriteLine($"Error fetching lyrics from LRCLIB: {ex.Message}");
+            return null;
+        }
     }
 
     // TODO: video downloading, this is less important as this is mainly for lidarr

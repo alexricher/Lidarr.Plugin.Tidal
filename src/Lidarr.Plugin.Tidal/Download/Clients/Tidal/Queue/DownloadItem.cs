@@ -156,31 +156,47 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
             var plainLyrics = string.Empty;
             string syncLyrics = null;
 
-            var lyrics = await TidalAPI.Instance.Client.Downloader.FetchLyricsFromTidal(track, cancellation);
-            if (lyrics.HasValue)
+            try
             {
-                plainLyrics = lyrics.Value.plainLyrics;
-
-                if (settings.SaveSyncedLyrics)
-                    syncLyrics = lyrics.Value.syncLyrics;
-            }
-
-            if (settings.UseLRCLIB && (string.IsNullOrWhiteSpace(plainLyrics) || (settings.SaveSyncedLyrics && !(syncLyrics?.Any() ?? false))))
-            {
-                lyrics = await TidalAPI.Instance.Client.Downloader.FetchLyricsFromLRCLIB("lrclib.net", songTitle, artistName, albumTitle, duration, cancellation);
+                var lyrics = await TidalAPI.Instance.Client.Downloader.FetchLyricsFromTidal(track, cancellation);
                 if (lyrics.HasValue)
                 {
-                    if (string.IsNullOrWhiteSpace(plainLyrics))
-                        plainLyrics = lyrics.Value.plainLyrics;
-                    if (settings.SaveSyncedLyrics && !(syncLyrics?.Any() ?? false))
+                    plainLyrics = lyrics.Value.plainLyrics;
+
+                    if (settings.SaveSyncedLyrics)
                         syncLyrics = lyrics.Value.syncLyrics;
                 }
+
+                if (settings.UseLRCLIB && (string.IsNullOrWhiteSpace(plainLyrics) || (settings.SaveSyncedLyrics && !(syncLyrics?.Any() ?? false))))
+                {
+                    lyrics = await TidalAPI.Instance.Client.Downloader.FetchLyricsFromLRCLIB("lrclib.net", songTitle, artistName, albumTitle, duration, cancellation);
+                    if (lyrics.HasValue)
+                    {
+                        if (string.IsNullOrWhiteSpace(plainLyrics))
+                            plainLyrics = lyrics.Value.plainLyrics;
+                        if (settings.SaveSyncedLyrics && !(syncLyrics?.Any() ?? false))
+                            syncLyrics = lyrics.Value.syncLyrics;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // Log the error but continue with the download
+                logger.Warn($"Error fetching lyrics for track {track}: {ex.Message}");
             }
 
-            await TidalAPI.Instance.Client.Downloader.ApplyMetadataToFile(track, outPath, MediaResolution.s640, plainLyrics, token: cancellation);
+            try
+            {
+                await TidalAPI.Instance.Client.Downloader.ApplyMetadataToFile(track, outPath, MediaResolution.s640, plainLyrics, token: cancellation);
 
-            if (syncLyrics != null)
-                await CreateLrcFile(Path.Combine(outDir, MetadataUtilities.GetFilledTemplate("%volume% - %track% - %title%.%ext%", "lrc", page, _tidalAlbum)), syncLyrics);
+                if (syncLyrics != null)
+                    await CreateLrcFile(Path.Combine(outDir, MetadataUtilities.GetFilledTemplate("%volume% - %track% - %title%.%ext%", "lrc", page, _tidalAlbum)), syncLyrics);
+            }
+            catch (Exception ex)
+            {
+                // Log the error but don't fail the download
+                logger.Warn($"Error applying metadata or creating LRC file for track {track}: {ex.Message}");
+            }
 
             // TODO: this is currently a waste of resources, if this pr ever gets merged, it can be reenabled
             // https://github.com/Lidarr/Lidarr/pull/4370
