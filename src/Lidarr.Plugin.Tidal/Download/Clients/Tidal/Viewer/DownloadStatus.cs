@@ -56,27 +56,61 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Viewer
         public DownloadStatusManager(string baseDirectory, string statusFilesPath, Logger logger)
         {
             _logger = logger;
+            _logger.Info($"Initializing DownloadStatusManager with baseDir={baseDirectory}, statusFilesPath={statusFilesPath}");
+            
             string dataDirectory;
             
             // Use the user-specified status files path if provided
             if (!string.IsNullOrWhiteSpace(statusFilesPath))
             {
                 dataDirectory = statusFilesPath;
+                _logger.Info($"Using custom status file path: {dataDirectory}");
             }
             else
             {
                 // Fall back to the default location
                 dataDirectory = Path.Combine(baseDirectory, "TidalDownloadViewer");
+                _logger.Info($"Using default status file path: {dataDirectory}");
             }
             
             try
             {
+                // Handle Docker path conversion if needed
+                if (Path.DirectorySeparatorChar == '\\' && dataDirectory.StartsWith("/"))
+                {
+                    _logger.Info("Detected Windows system with Linux-style paths (Docker scenario)");
+                    dataDirectory = dataDirectory.TrimStart('/').Replace('/', '\\');
+                    _logger.Info($"Converted path to: {dataDirectory}");
+                }
+
+                _logger.Info($"Checking if directory exists: {dataDirectory}");
                 if (!Directory.Exists(dataDirectory))
                 {
+                    _logger.Info($"Creating directory: {dataDirectory}");
                     Directory.CreateDirectory(dataDirectory);
+                    
+                    // Test file creation
+                    var testPath = Path.Combine(dataDirectory, "directory_test.txt");
+                    File.WriteAllText(testPath, "Directory creation test");
+                    _logger.Info($"Test file created at: {testPath}");
+                    
+                    // Clean up the test file
+                    try
+                    {
+                        if (File.Exists(testPath))
+                        {
+                            File.Delete(testPath);
+                            _logger.Debug($"Deleted temporary test file: {testPath}");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Debug($"Failed to delete test file (non-critical): {ex.Message}");
+                    }
                 }
                 
                 _statusFilePath = Path.Combine(dataDirectory, "status.json");
+                _logger.Info($"Status file path set to: {_statusFilePath}");
                 _status = LoadOrCreateStatus();
                 
                 // Update the status file every 15 seconds
@@ -84,7 +118,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Viewer
             }
             catch (Exception ex)
             {
-                _logger.Error(ex, "Failed to initialize download status manager. Status tracking will be disabled.");
+                _logger.Error(ex, $"Failed to initialize download status manager with path {dataDirectory}. Status tracking will be disabled.");
                 // Initialize with defaults to prevent null reference exceptions
                 _statusFilePath = null;
                 _status = new DownloadStatus();
@@ -95,6 +129,14 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Viewer
         {
             try
             {
+                // Check if directory exists, create if not
+                string directory = Path.GetDirectoryName(_statusFilePath);
+                if (!Directory.Exists(directory))
+                {
+                    _logger.Warn($"Status directory was deleted, recreating: {directory}");
+                    Directory.CreateDirectory(directory);
+                }
+                
                 if (File.Exists(_statusFilePath))
                 {
                     string json = File.ReadAllText(_statusFilePath);
@@ -124,7 +166,17 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Viewer
                 {
                     _status.LastUpdated = DateTime.UtcNow;
                     string json = JsonSerializer.Serialize(_status, _jsonOptions);
+                    
+                    // Check if directory exists, create if not
+                    string directory = Path.GetDirectoryName(_statusFilePath);
+                    if (!Directory.Exists(directory))
+                    {
+                        _logger.Warn($"Status directory was deleted, recreating: {directory}");
+                        Directory.CreateDirectory(directory);
+                    }
+                    
                     File.WriteAllText(_statusFilePath, json);
+                    _logger.Debug($"Status file updated successfully: {_statusFilePath}");
                 }
             }
             catch (Exception ex)

@@ -1,6 +1,6 @@
 param (
     [switch]$CreateZip = $true,
-    [string]$OutputPath = "X:\lidarr-hotio-test\plugins\alexricher\Lidarr.Plugin.Tidal",
+    [string]$OutputPath = "X:\lidarr-hotio\plugins\alexricher\Lidarr.Plugin.Tidal",
     [switch]$CopyToLocalPath = $true,
     [switch]$CleanPreviousBuilds = $true,
     [switch]$UpdateLidarrRepo = $false,
@@ -245,7 +245,8 @@ try {
     }
 
     # Then build the plugin
-    if (Test-Path "src\Lidarr.Plugin.Tidal\Lidarr.Plugin.Tidal.csproj") {
+    $pluginProjectPath = "src\Lidarr.Plugin.Tidal\Lidarr.Plugin.Tidal.csproj"
+    if (Test-Path $pluginProjectPath) {
         Write-Host "Building plugin..." -ForegroundColor Yellow
         
         # Clean output directories to ensure no old files interfere
@@ -262,7 +263,7 @@ try {
         }
         
         Write-Host "Restoring NuGet packages..." -ForegroundColor Yellow
-        dotnet restore "src\Lidarr.Plugin.Tidal\Lidarr.Plugin.Tidal.csproj"
+        dotnet restore $pluginProjectPath
         
         # Build with MSBuild to ensure ILRepack target is executed
         Write-Host "Building plugin with MSBuild to trigger ILRepack..." -ForegroundColor Yellow
@@ -271,7 +272,7 @@ try {
         $absOutputPath = Join-Path (Get-Location).Path "_plugins\$PluginName"
         Write-Host "Output path: $absOutputPath" -ForegroundColor Yellow
         
-        $buildResult = dotnet msbuild "src\Lidarr.Plugin.Tidal\Lidarr.Plugin.Tidal.csproj" `
+        $buildResult = dotnet msbuild $pluginProjectPath `
             /p:Configuration=Release `
             /p:TargetFramework=$Framework `
             /p:Version=$PluginVersion `
