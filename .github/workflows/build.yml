@@ -130,15 +130,23 @@ jobs:
       run: |
         echo "Building version ${{ env.PLUGIN_VERSION }}"
         
-        # Create a simple Directory.Build.targets file to exclude conflicting SQLite files
-        cat > src/Directory.Build.targets << 'EOF'
+        # Create a Directory.Build.props file to exclude the problematic SQLite package
+        cat > src/Directory.Build.props << 'EOF'
         <Project>
-          <Target Name="RemoveSQLiteConflicts" BeforeTargets="ResolveAssemblyReferences;ComputeFilesToPublish">
+          <PropertyGroup>
+            <!-- Exclude specific problematic SQLite files -->
+            <PublishReadyToRunExclude>System.Data.SQLite.Core.Servarr</PublishReadyToRunExclude>
+            <RuntimeHostConfigurationOption Condition="'$(TargetFrameworkIdentifier)' == '.NETCoreApp'">System.Data.SqlClient.UseManagedNetworkingOnWindows=true</RuntimeHostConfigurationOption>
+            <!-- Exclude specific runtime assets to avoid collisions -->
+            <ExcludeRuntimesFromPublish>net46</ExcludeRuntimesFromPublish>
+          </PropertyGroup>
+          
+          <!-- Override the conflict resolution logic -->
+          <Target Name="ExcludeSQLiteNative" BeforeTargets="_HandleFileConflictsForPublish">
             <ItemGroup>
-              <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)" 
-                Condition="$([System.String]::Copy('%(Identity)').Contains('runtimes/win-x64/native/net46/sqlite3.dll'))" />
               <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" 
-                Condition="$([System.String]::Copy('%(Identity)').Contains('runtimes/win-x64/native/net46/sqlite3.dll'))" />
+                Condition="$([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('sqlite3.dll')) AND 
+                          $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('net46'))" />
             </ItemGroup>
           </Target>
         </Project>
@@ -153,6 +161,7 @@ jobs:
           -p:Version=${{ env.PLUGIN_VERSION }} \
           -p:TreatWarningsAsErrors=false \
           -p:RunAnalyzers=false \
+          -p:EnableWindowsTargeting=true \
           -o _output \
           --verbosity detailed || { echo "Build failed with errors"; exit 1; }
     
