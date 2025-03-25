@@ -28,6 +28,10 @@ function BackupFileContents {
     if (Test-Path $filePath) {
         $originalFileContents[$filePath] = Get-Content $filePath -Raw
         Write-Host "  Backed up content of $filePath" -ForegroundColor Gray
+    } else {
+        # For files that don't exist yet, store an empty string to indicate it didn't exist
+        $originalFileContents[$filePath] = ""
+        Write-Host "  Noted that $filePath doesn't exist (will be deleted after build)" -ForegroundColor Gray
     }
 }
 
@@ -37,16 +41,28 @@ function RestoreFileContents {
         [string]$filePath
     )
     
-    if ($originalFileContents.ContainsKey($filePath) -and (Test-Path $filePath)) {
-        $originalFileContents[$filePath] | Set-Content $filePath -NoNewline
-        Write-Host "  Restored content of $filePath" -ForegroundColor Gray
+    if ($originalFileContents.ContainsKey($filePath)) {
+        $originalContent = $originalFileContents[$filePath]
+        
+        if ($originalContent -eq "") {
+            # File didn't exist before, so remove it
+            if (Test-Path $filePath) {
+                Remove-Item -Path $filePath -Force
+                Write-Host "  Removed file $filePath as it didn't exist before build" -ForegroundColor Gray
+            }
+        } else {
+            # Restore original content
+            $originalContent | Set-Content $filePath -NoNewline
+            Write-Host "  Restored content of $filePath" -ForegroundColor Gray
+        }
     }
 }
 
 # Files to track for restoration
 $filesToRestore = @(
     "./src/Directory.Build.props",
-    "./ext/Lidarr/src/Directory.Build.props"
+    "./ext/Lidarr/src/Directory.Build.props",
+    "./src/Directory.Build.targets"  # Only track Directory.Build.targets
 )
 
 # Restore files function
@@ -63,6 +79,12 @@ function RestoreFiles {
             } else {
                 # File is not tracked by Git, restore from backup
                 RestoreFileContents $file
+            }
+        } else {
+            # If the file doesn't exist now but we have a backup, it means
+            # the file was created during the build and needs no restoration
+            if ($originalFileContents.ContainsKey($file) -and $originalFileContents[$file] -eq "") {
+                Write-Host "  No need to restore $file - it didn't exist before build" -ForegroundColor Gray
             }
         }
     }
@@ -215,6 +237,61 @@ try {
     if (Test-Path $lidarrProps) {
         (Get-Content $lidarrProps) -replace '<AssemblyVersion>[0-9.*]+</AssemblyVersion>', "<AssemblyVersion>$MinimumLidarrVersion</AssemblyVersion>" |
             Set-Content $lidarrProps
+    }
+    
+    # Create a Directory.Build.targets file to handle SQLite conflicts
+    Write-Host "Creating Directory.Build.targets to handle SQLite conflicts..." -ForegroundColor Yellow
+    $targetFilePath = "./src/Directory.Build.targets"
+    
+    $existingTargetsContent = ""
+    if (Test-Path $targetFilePath) {
+        $existingTargetsContent = Get-Content $targetFilePath -Raw
+    }
+    
+    # Only proceed if we don't already have SQLite conflict handling in the file
+    if (-not $existingTargetsContent.Contains("HandleSQLiteConflicts")) {
+        $targetFileContent = @"
+<Project>
+  <!-- below net4.7.1 the new portable pdb format has no line numbers, pdb to mdb probably doesn't like it either -->
+  <PropertyGroup Condition="'`$(TargetFramework)' == 'net462'">
+    <DebugType>full</DebugType>
+  </PropertyGroup>
+
+  <!-- Exclude problematic SQLite files during build and publish -->
+  <PropertyGroup>
+    <!-- Exclude SQLite core package from publishing -->
+    <SuppressSystemDataSQLite>true</SuppressSystemDataSQLite>
+    <PublishReadyToRunExclude>System.Data.SQLite.Core.Servarr</PublishReadyToRunExclude>
+  </PropertyGroup>
+  
+  <!-- Handle file conflicts pre-emptively -->
+  <Target Name="RemoveSQLiteConflictsDuringBuild" BeforeTargets="Build;Restore;ResolvePackageAssets">
+    <Message Text="Removing SQLite conflicts during build..." Importance="high" />
+    <ItemGroup>
+      <!-- Remove problematic references -->
+      <Reference Remove="@(Reference)" Condition="`$([System.String]::Copy('%(Reference.Identity)').Contains('System.Data.SQLite'))" />
+      <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)" 
+                              Condition="`$([System.String]::Copy('%(ReferenceCopyLocalPaths.DestinationSubPath)').Contains('System.Data.SQLite')) Or 
+                                        `$([System.String]::Copy('%(ReferenceCopyLocalPaths.DestinationSubPath)').Contains('sqlite3.dll'))" />
+    </ItemGroup>
+  </Target>
+  
+  <!-- Special publish target -->
+  <Target Name="HandleSQLiteConflicts" BeforeTargets="ComputeFilesToPublish;_HandleFileConflictsForPublish">
+    <Message Text="Handling SQLite conflicts during publish..." Importance="high" />
+    <ItemGroup>
+      <!-- Remove problematic publish files -->
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" 
+                            Condition="`$([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('system.data.sqlite')) Or
+                                      `$([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('sqlite3.dll'))" />
+    </ItemGroup>
+  </Target>
+</Project>
+"@
+        Set-Content -Path $targetFilePath -Value $targetFileContent
+        Write-Host "  Created Directory.Build.targets with SQLite conflict handling" -ForegroundColor Green
+    } else {
+        Write-Host "  Directory.Build.targets already contains SQLite conflict handling" -ForegroundColor Gray
     }
 
     # Create global.json with the correct .NET version

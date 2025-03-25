@@ -126,22 +126,60 @@ jobs:
     - name: Test Solution
       run: dotnet build src/Lidarr.Plugin.Tidal.sln --no-restore -p:TreatWarningsAsErrors=false -p:RunAnalyzers=false
     
+    - name: Create SQLite conflict fix
+      run: |
+        echo "Creating Directory.Build.targets to handle SQLite conflicts..."
+        mkdir -p src
+        cat > src/Directory.Build.targets << 'EOF'
+        <Project>
+          <!-- Exclude problematic SQLite files during build and publish -->
+          <PropertyGroup>
+            <SuppressSystemDataSQLite>true</SuppressSystemDataSQLite>
+            <PublishReadyToRunExclude>System.Data.SQLite.Core.Servarr</PublishReadyToRunExclude>
+          </PropertyGroup>
+          
+          <!-- Handle file conflicts pre-emptively -->
+          <Target Name="RemoveSQLiteConflictsDuringBuild" BeforeTargets="Build;Restore;ResolvePackageAssets">
+            <Message Text="Removing SQLite conflicts during build..." Importance="high" />
+            <ItemGroup>
+              <Reference Remove="@(Reference)" Condition="$([System.String]::Copy('%(Reference.Identity)').Contains('System.Data.SQLite'))" />
+              <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)" 
+                                      Condition="$([System.String]::Copy('%(ReferenceCopyLocalPaths.DestinationSubPath)').Contains('System.Data.SQLite')) Or 
+                                                $([System.String]::Copy('%(ReferenceCopyLocalPaths.DestinationSubPath)').Contains('sqlite3.dll'))" />
+            </ItemGroup>
+          </Target>
+          
+          <!-- Handle file conflicts during publish -->
+          <Target Name="HandleSQLiteConflicts" BeforeTargets="ComputeFilesToPublish;_HandleFileConflictsForPublish">
+            <Message Text="Handling SQLite conflicts during publish..." Importance="high" />
+            <ItemGroup>
+              <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" 
+                                    Condition="$([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('system.data.sqlite')) Or
+                                              $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('sqlite3.dll'))" />
+            </ItemGroup>
+          </Target>
+        </Project>
+        EOF
+        echo "Generated Directory.Build.targets file to handle SQLite conflicts"
+
     - name: Build
       run: |
         echo "Building version ${{ env.PLUGIN_VERSION }}"
         
-        # Simpler approach - rely on the project-level fix for SQLite conflicts
+        # Build with detailed logging to diagnose any issues
         dotnet publish src/${{ env.PLUGIN_NAME }}/${{ env.PLUGIN_NAME }}.csproj \
           -c Release \
           -f ${{ env.FRAMEWORK }} \
           -r ${{ env.RUNTIME }} \
           --self-contained false \
           -p:Version=${{ env.PLUGIN_VERSION }} \
-          -p:TreatWarningsAsErrors=false \
-          -p:RunAnalyzers=false \
           -p:EnableWindowsTargeting=true \
           -o _output \
-          --verbosity detailed || { echo "Build failed with errors"; exit 1; }
+          --verbosity normal || { 
+            echo "Build failed, checking for specific errors:" 
+            find $HOME/.nuget/packages -name "sqlite3.dll" | grep -E "net46|netstandard2.0"
+            exit 1
+          }
     
     - name: Package
       run: |

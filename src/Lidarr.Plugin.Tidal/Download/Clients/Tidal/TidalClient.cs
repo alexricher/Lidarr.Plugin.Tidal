@@ -110,6 +110,15 @@ namespace NzbDrone.Core.Download.Clients.Tidal
             var previousSettings = Settings;
             bool pathChanged = !string.Equals(previousSettings?.StatusFilesPath, settings?.StatusFilesPath, StringComparison.OrdinalIgnoreCase);
             
+            // Check if behavior profile has changed
+            bool profileChanged = previousSettings?.BehaviorProfileType != settings?.BehaviorProfileType;
+            if (profileChanged && settings.BehaviorProfileType != (int)BehaviorProfile.Custom)
+            {
+                _logger.Debug($"Behavior profile changed from {(BehaviorProfile)previousSettings.BehaviorProfileType} to {(BehaviorProfile)settings.BehaviorProfileType}, applying new profile settings");
+                // Make sure to apply the profile settings
+                TidalBehaviorProfiles.ApplyProfile(settings, (BehaviorProfile)settings.BehaviorProfileType);
+            }
+            
             // Check if behavior profile is set to Automatic
             if (settings.BehaviorProfileType == (int)BehaviorProfile.Automatic)
             {

@@ -28,16 +28,6 @@
 		<BackupFile>$(SourceFile).bak</BackupFile>
 	</PropertyGroup>
 
-	<!-- Add target to handle SQLite conflicts -->
-	<Target Name="HandleSQLiteFileConflicts" BeforeTargets="_HandleFileConflictsForPublish">
-		<ItemGroup>
-			<!-- Remove the net46 version of sqlite3.dll, keeping only the netstandard2.0 version -->
-			<ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" 
-				Condition="$([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('system.data.sqlite.core.servarr')) AND 
-						  $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('net46'))" />
-		</ItemGroup>
-	</Target>
-
 	<Target Condition="'$(Configuration)' == 'Debug'" Name="PostBuild" AfterTargets="ILRepacker">
 		<Exec ContinueOnError="true" Command="COPY &quot;$(TargetPath)&quot; &quot;C:\ProgramData\Lidarr\plugins\TrevTV\Lidarr.Plugin.Tidal&quot;" />
 	</Target>
