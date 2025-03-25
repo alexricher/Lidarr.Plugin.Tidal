@@ -94,9 +94,11 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
         private (string id, int chunks)[] _tracks;
         private TidalURL _tidalUrl;
         private JObject _tidalAlbum;
+        private Logger _logger;
 
         public virtual async Task DoDownload(TidalSettings settings, Logger logger, CancellationToken cancellation = default)
         {
+            _logger = logger;
             List<Task> tasks = new();
             using SemaphoreSlim semaphore = new(3, 3);
             foreach (var (trackId, trackSize) in _tracks)
@@ -151,7 +153,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                 Directory.CreateDirectory(outDir);
 
             await TidalAPI.Instance.Client.Downloader.WriteRawTrackToFile(track, Bitrate, outPath, (i) => DownloadedSize++, cancellation);
-            outPath = HandleAudioConversion(outPath, settings);
+            outPath = HandleAudioConversion(outPath, settings, _logger);
 
             var plainLyrics = string.Empty;
             string syncLyrics = null;
@@ -182,7 +184,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
             catch (Exception ex)
             {
                 // Log the error but continue with the download
-                logger.Warn($"Error fetching lyrics for track {track}: {ex.Message}");
+                _logger?.Warn($"Error fetching lyrics for track {track}: {ex.Message}");
             }
 
             try
@@ -195,7 +197,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
             catch (Exception ex)
             {
                 // Log the error but don't fail the download
-                logger.Warn($"Error applying metadata or creating LRC file for track {track}: {ex.Message}");
+                _logger?.Warn($"Error applying metadata or creating LRC file for track {track}: {ex.Message}");
             }
 
             // TODO: this is currently a waste of resources, if this pr ever gets merged, it can be reenabled
@@ -212,7 +214,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
             catch (UnavailableArtException) { } */
         }
 
-        private string HandleAudioConversion(string filePath, TidalSettings settings)
+        private string HandleAudioConversion(string filePath, TidalSettings settings, Logger logger)
         {
             if (!settings.ExtractFlac && !settings.ReEncodeAAC)
                 return filePath;
@@ -228,8 +230,21 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                         File.Delete(filePath);
                     return newFilePath;
                 }
-                catch (FFMPEGException)
+                catch (FFMPEGException ex)
                 {
+                    // Log the error with details
+                    logger?.Warn($"FLAC extraction failed for {Path.GetFileName(filePath)}: {ex.Message}");
+                    
+                    // Clean up any partial output file
+                    if (File.Exists(newFilePath))
+                        File.Delete(newFilePath);
+                    return filePath;
+                }
+                catch (Exception ex)
+                {
+                    // Handle any other unexpected exceptions
+                    logger?.Warn($"Unexpected error during FLAC extraction for {Path.GetFileName(filePath)}: {ex.Message}");
+                    
                     if (File.Exists(newFilePath))
                         File.Delete(newFilePath);
                     return filePath;
@@ -250,8 +265,21 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                         File.Delete(filePath);
                     return newFilePath;
                 }
-                catch (FFMPEGException)
+                catch (FFMPEGException ex)
                 {
+                    // Log the error with details
+                    logger?.Warn($"AAC to MP3 conversion failed for {Path.GetFileName(filePath)}: {ex.Message}");
+                    
+                    // Clean up any partial output file
+                    if (File.Exists(newFilePath))
+                        File.Delete(newFilePath);
+                    return filePath;
+                }
+                catch (Exception ex)
+                {
+                    // Handle any other unexpected exceptions
+                    logger?.Warn($"Unexpected error during AAC to MP3 conversion for {Path.GetFileName(filePath)}: {ex.Message}");
+                    
                     if (File.Exists(newFilePath))
                         File.Delete(newFilePath);
                     return filePath;
