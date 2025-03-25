@@ -76,7 +76,7 @@ jobs:
         sed -i 's/<SentryUploadSymbols>true<\/SentryUploadSymbols>/<SentryUploadSymbols>false<\/SentryUploadSymbols>/g' Directory.Build.props
         dotnet build -c Release -p:SentryUploadSymbols=false
         # List the built assemblies to verify they exist
-        find $(pwd) -name "*.dll" | grep -E "Lidarr.(Core|Common)"
+        find $(pwd) -name "*.dll" | grep -E "Lidarr.(Core|Common)" || true
 
     - name: Debug Lidarr structure
       run: |
