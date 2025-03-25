@@ -130,6 +130,17 @@ jobs:
       run: |
         echo "Building version ${{ env.PLUGIN_VERSION }}"
         
+        # Create a Directory.Build.targets file to help resolve the SQLite conflict
+        cat > src/Directory.Build.targets << 'EOF'
+        <Project>
+          <Target Name="ExcludeConflictingSQLiteFiles" BeforeTargets="ComputeFilesToPublish">
+            <ItemGroup>
+              <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="$([System.String]::Copy('%(ResolvedFileToPublish.RelativePath)').Contains('runtimes/win-x64/native/net46/sqlite3.dll'))" />
+            </ItemGroup>
+          </Target>
+        </Project>
+        EOF
+        
         dotnet publish src/${{ env.PLUGIN_NAME }}/${{ env.PLUGIN_NAME }}.csproj \
           -c Release \
           -f ${{ env.FRAMEWORK }} \
@@ -139,7 +150,6 @@ jobs:
           -p:TreatWarningsAsErrors=false \
           -p:RunAnalyzers=false \
           -p:EnableWindowsTargeting=true \
-          -p:ExcludeFilesFromPublish="runtimes/win-x64/native/net46/sqlite3.dll" \
           -o _output \
           --verbosity detailed || { echo "Build failed with errors"; exit 1; }
     
