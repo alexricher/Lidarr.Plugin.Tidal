@@ -83,8 +83,8 @@ jobs:
         echo "Checking Lidarr project structure:"
         find ext/Lidarr/src -name "*.csproj" | sort
         
-        echo "Checking if NzbDrone.Core.dll exists:"
-        find ext/Lidarr -name "NzbDrone.Core.dll"
+        echo "Checking if Lidarr.Core.dll exists:"
+        find ext/Lidarr -name "Lidarr.Core.dll"
         
         echo "Checking TidalSharp project references:"
         grep -r "ProjectReference" src/TidalSharp/TidalSharp.csproj
@@ -97,8 +97,8 @@ jobs:
         
         # Check if Lidarr assemblies exist in expected locations
         echo "Checking for Lidarr assemblies:"
-        find ext/Lidarr/src -name "NzbDrone.Core.dll"
-        find ext/Lidarr/src -name "NzbDrone.Common.dll"
+        find ext/Lidarr/src -name "Lidarr.Core.dll"
+        find ext/Lidarr/src -name "Lidarr.Common.dll"
         
         # Try to restore packages explicitly
         dotnet restore src/TidalSharp/TidalSharp.csproj --verbosity normal
@@ -189,6 +189,7 @@ jobs:
         git add .github/workflows/.build_number
         git commit -m "Increment build number to $((BUILD_NUMBER + 1)) [skip ci]"
         git push
+
 
 
 
