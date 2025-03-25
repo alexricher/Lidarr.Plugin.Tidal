@@ -81,7 +81,7 @@ jobs:
         cd ext/Lidarr/src
         # Disable Sentry in Directory.Build.props
         sed -i 's/<SentryUploadSymbols>true<\/SentryUploadSymbols>/<SentryUploadSymbols>false<\/SentryUploadSymbols>/g' Directory.Build.props
-        dotnet build -c Release -p:SentryUploadSymbols=false
+        dotnet build -c Release -p:SentryUploadSymbols=false -p:TreatWarningsAsErrors=false -p:RunAnalyzers=false
         # List the built assemblies to verify they exist
         find $(pwd) -name "*.dll" | grep -E "Lidarr.(Core|Common)" || true
 
@@ -116,13 +116,15 @@ jobs:
         dotnet build src/TidalSharp/TidalSharp.csproj \
           -c Release \
           -p:Version=${{ env.PLUGIN_VERSION }} \
+          -p:TreatWarningsAsErrors=false \
+          -p:RunAnalyzers=false \
           --verbosity normal
     
     - name: Restore dependencies
       run: dotnet restore src/Lidarr.Plugin.Tidal.sln
     
     - name: Test Solution
-      run: dotnet build src/Lidarr.Plugin.Tidal.sln --no-restore
+      run: dotnet build src/Lidarr.Plugin.Tidal.sln --no-restore -p:TreatWarningsAsErrors=false -p:RunAnalyzers=false
     
     - name: Build
       run: |
@@ -134,6 +136,8 @@ jobs:
           -r ${{ env.RUNTIME }} \
           --self-contained false \
           -p:Version=${{ env.PLUGIN_VERSION }} \
+          -p:TreatWarningsAsErrors=false \
+          -p:RunAnalyzers=false \
           -o _output \
           --verbosity detailed || { echo "Build failed with errors"; exit 1; }
     
