@@ -130,35 +130,21 @@ jobs:
       run: |
         echo "Building version ${{ env.PLUGIN_VERSION }}"
         
-        # Create a Directory.Build.targets file with an enhanced approach to resolve SQLite conflicts
+        # Create a simple Directory.Build.targets file to exclude conflicting SQLite files
         cat > src/Directory.Build.targets << 'EOF'
         <Project>
-          <!-- Handle SQLite DLL conflicts -->
-          <PropertyGroup>
-            <!-- Exclude specific problematic SQLite runtime assets -->
-            <RuntimeHostConfigurationOption Include="System.Data.SqlClient.UseManagedNetworkingOnWindows" Value="true" />
-            <PublishReadyToRun>false</PublishReadyToRun>
-          </PropertyGroup>
-          
-          <Target Name="RemoveConflictingSQLiteFiles" BeforeTargets="ResolveAssemblyReferences;ComputeFilesToPublish;_HandleFileConflictsForPublish">
+          <Target Name="RemoveSQLiteConflicts" BeforeTargets="ResolveAssemblyReferences;ComputeFilesToPublish">
             <ItemGroup>
-              <!-- Explicitly remove problematic files -->
-              <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)" Condition="$([System.String]::Copy('%(Identity)').Contains('runtimes/win-x64/native/net46/sqlite3.dll'))" />
-              <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="$([System.String]::Copy('%(Identity)').Contains('runtimes/win-x64/native/net46/sqlite3.dll'))" />
+              <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)" 
+                Condition="$([System.String]::Copy('%(Identity)').Contains('runtimes/win-x64/native/net46/sqlite3.dll'))" />
+              <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" 
+                Condition="$([System.String]::Copy('%(Identity)').Contains('runtimes/win-x64/native/net46/sqlite3.dll'))" />
             </ItemGroup>
           </Target>
         </Project>
         EOF
         
-        # Create empty runtimeconfig.template.json to influence runtime behavior
-        cat > src/Lidarr.Plugin.Tidal/runtimeconfig.template.json << 'EOF'
-        {
-          "configProperties": {
-            "System.Data.SqlClient.UseManagedNetworkingOnWindows": true
-          }
-        }
-        EOF
-        
+        # Try a simpler approach to publishing
         dotnet publish src/${{ env.PLUGIN_NAME }}/${{ env.PLUGIN_NAME }}.csproj \
           -c Release \
           -f ${{ env.FRAMEWORK }} \
@@ -167,9 +153,6 @@ jobs:
           -p:Version=${{ env.PLUGIN_VERSION }} \
           -p:TreatWarningsAsErrors=false \
           -p:RunAnalyzers=false \
-          -p:EnableWindowsTargeting=true \
-          -p:CopyLocalLockFileAssemblies=true \
-          -p:SkipInvalidConfigurations=true \
           -o _output \
           --verbosity detailed || { echo "Build failed with errors"; exit 1; }
     
