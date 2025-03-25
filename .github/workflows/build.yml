@@ -138,6 +138,8 @@ jobs:
           -p:Version=${{ env.PLUGIN_VERSION }} \
           -p:TreatWarningsAsErrors=false \
           -p:RunAnalyzers=false \
+          -p:EnableWindowsTargeting=true \
+          -p:ExcludeFilesFromPublish="runtimes/win-x64/native/net46/sqlite3.dll" \
           -o _output \
           --verbosity detailed || { echo "Build failed with errors"; exit 1; }
     
