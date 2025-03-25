@@ -59,10 +59,17 @@ jobs:
       id: build_number
       run: |
         if [ -f .github/workflows/.build_number ]; then
-          echo "BUILD_NUMBER=$(cat .github/workflows/.build_number)" >> $GITHUB_ENV
+          # Handle encoding issues by ensuring we read only ASCII digits
+          BUILD_NUM=$(cat .github/workflows/.build_number | tr -cd '0-9')
+          if [ -z "$BUILD_NUM" ] || [ "$BUILD_NUM" = "0" ]; then
+            # Fallback if we can't read a valid number
+            BUILD_NUM=1
+          fi
+          echo "BUILD_NUMBER=$BUILD_NUM" >> $GITHUB_ENV
         else
           echo "BUILD_NUMBER=1" >> $GITHUB_ENV
         fi
+        echo "Using build number: $BUILD_NUM"
     
     - name: Set version for non-tags
       if: ${{ !startsWith(github.ref, 'refs/tags/') }}
@@ -87,7 +94,7 @@ jobs:
         find ext/Lidarr -name "Lidarr.Core.dll"
         
         echo "Checking TidalSharp project references:"
-        grep -r "ProjectReference" src/TidalSharp/TidalSharp.csproj
+        grep -r "ProjectReference" src/TidalSharp/TidalSharp.csproj || true
 
     - name: Debug TidalSharp references
       run: |
