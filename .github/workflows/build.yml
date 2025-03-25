@@ -130,29 +130,7 @@ jobs:
       run: |
         echo "Building version ${{ env.PLUGIN_VERSION }}"
         
-        # Create a Directory.Build.props file to exclude the problematic SQLite package
-        cat > src/Directory.Build.props << 'EOF'
-        <Project>
-          <PropertyGroup>
-            <!-- Exclude specific problematic SQLite files -->
-            <PublishReadyToRunExclude>System.Data.SQLite.Core.Servarr</PublishReadyToRunExclude>
-            <RuntimeHostConfigurationOption Condition="'$(TargetFrameworkIdentifier)' == '.NETCoreApp'">System.Data.SqlClient.UseManagedNetworkingOnWindows=true</RuntimeHostConfigurationOption>
-            <!-- Exclude specific runtime assets to avoid collisions -->
-            <ExcludeRuntimesFromPublish>net46</ExcludeRuntimesFromPublish>
-          </PropertyGroup>
-          
-          <!-- Override the conflict resolution logic -->
-          <Target Name="ExcludeSQLiteNative" BeforeTargets="_HandleFileConflictsForPublish">
-            <ItemGroup>
-              <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" 
-                Condition="$([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('sqlite3.dll')) AND 
-                          $([System.String]::Copy('%(ResolvedFileToPublish.OriginalItemSpec)').Contains('net46'))" />
-            </ItemGroup>
-          </Target>
-        </Project>
-        EOF
-        
-        # Try a simpler approach to publishing
+        # Simpler approach - rely on the project-level fix for SQLite conflicts
         dotnet publish src/${{ env.PLUGIN_NAME }}/${{ env.PLUGIN_NAME }}.csproj \
           -c Release \
           -f ${{ env.FRAMEWORK }} \
