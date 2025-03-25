@@ -130,15 +130,33 @@ jobs:
       run: |
         echo "Building version ${{ env.PLUGIN_VERSION }}"
         
-        # Create a Directory.Build.targets file to help resolve the SQLite conflict
+        # Create a Directory.Build.targets file with an enhanced approach to resolve SQLite conflicts
         cat > src/Directory.Build.targets << 'EOF'
         <Project>
-          <Target Name="ExcludeConflictingSQLiteFiles" BeforeTargets="ComputeFilesToPublish">
+          <!-- Handle SQLite DLL conflicts -->
+          <PropertyGroup>
+            <!-- Exclude specific problematic SQLite runtime assets -->
+            <RuntimeHostConfigurationOption Include="System.Data.SqlClient.UseManagedNetworkingOnWindows" Value="true" />
+            <PublishReadyToRun>false</PublishReadyToRun>
+          </PropertyGroup>
+          
+          <Target Name="RemoveConflictingSQLiteFiles" BeforeTargets="ResolveAssemblyReferences;ComputeFilesToPublish;_HandleFileConflictsForPublish">
             <ItemGroup>
-              <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="$([System.String]::Copy('%(ResolvedFileToPublish.RelativePath)').Contains('runtimes/win-x64/native/net46/sqlite3.dll'))" />
+              <!-- Explicitly remove problematic files -->
+              <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)" Condition="$([System.String]::Copy('%(Identity)').Contains('runtimes/win-x64/native/net46/sqlite3.dll'))" />
+              <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="$([System.String]::Copy('%(Identity)').Contains('runtimes/win-x64/native/net46/sqlite3.dll'))" />
             </ItemGroup>
           </Target>
         </Project>
+        EOF
+        
+        # Create empty runtimeconfig.template.json to influence runtime behavior
+        cat > src/Lidarr.Plugin.Tidal/runtimeconfig.template.json << 'EOF'
+        {
+          "configProperties": {
+            "System.Data.SqlClient.UseManagedNetworkingOnWindows": true
+          }
+        }
         EOF
         
         dotnet publish src/${{ env.PLUGIN_NAME }}/${{ env.PLUGIN_NAME }}.csproj \
@@ -150,6 +168,8 @@ jobs:
           -p:TreatWarningsAsErrors=false \
           -p:RunAnalyzers=false \
           -p:EnableWindowsTargeting=true \
+          -p:CopyLocalLockFileAssemblies=true \
+          -p:SkipInvalidConfigurations=true \
           -o _output \
           --verbosity detailed || { echo "Build failed with errors"; exit 1; }
     
