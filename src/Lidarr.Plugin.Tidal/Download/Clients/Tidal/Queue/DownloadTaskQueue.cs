@@ -32,7 +32,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
         private int _totalItemsQueued = 0;
         private int _failedDownloads = 0;
         private DateTime _lastStatsLogTime = DateTime.UtcNow;
-        private readonly TimeSpan _statsLogInterval = TimeSpan.FromHours(1);
+        private readonly TimeSpan _statsLogInterval = TimeSpan.FromMinutes(10); // Changed from 1 hour to 10 minutes
         
         // Download status manager for the viewer
         private readonly DownloadStatusManager _statusManager;
@@ -78,6 +78,9 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
         {
             try
             {
+                Random random = new Random();
+                DateTime lastRandomStatsTime = DateTime.UtcNow;
+                
                 while (!stoppingToken.IsCancellationRequested)
                 {
                     // Adapt behavior based on queue volume
@@ -86,11 +89,24 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                     // Calculate download rate
                     UpdateDownloadRate();
                     
-                    // Log statistics periodically
-                    if ((DateTime.UtcNow - _lastStatsLogTime) > _statsLogInterval)
+                    // Log statistics periodically, but only when there are items in the queue
+                    if (_items.Count > 0)
                     {
-                        LogQueueStatistics();
-                        _lastStatsLogTime = DateTime.UtcNow;
+                        // Regular scheduled logging
+                        if ((DateTime.UtcNow - _lastStatsLogTime) > _statsLogInterval)
+                        {
+                            LogQueueStatistics();
+                            _lastStatsLogTime = DateTime.UtcNow;
+                        }
+                        
+                        // Random interval logging (approximately every 30-90 minutes)
+                        TimeSpan randomInterval = TimeSpan.FromMinutes(random.Next(30, 90));
+                        if ((DateTime.UtcNow - lastRandomStatsTime) > randomInterval)
+                        {
+                            _logger.Info("🎲 Random queue status check:");
+                            LogQueueStatistics();
+                            lastRandomStatsTime = DateTime.UtcNow;
+                        }
                     }
                     
                     var nextItem = await _naturalScheduler.GetNextItem(stoppingToken);
@@ -112,6 +128,13 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                         // Track successful download
                         _recentDownloads.Add(DateTime.UtcNow);
                         _statusManager.AddCompletedTrack(nextItem.Title, nextItem.Artist, nextItem.Album);
+                        
+                        // Log queue statistics after album download completes if there are still items in the queue
+                        if (_items.Count > 0)
+                        {
+                            LogQueueStatistics();
+                            _lastStatsLogTime = DateTime.UtcNow; // Update the last stats time to avoid duplicate logs
+                        }
                     }
                     catch (TaskCanceledException)
                     {
@@ -227,8 +250,16 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                 // Log when we hit large queue sizes
                 if (_items.Count % 1000 == 0)
                 {
-                    _logger.Info($"Queue size has reached {_items.Count} items");
+                    _logger.Info($"📈 Queue milestone reached: {_items.Count} items");
                     _behaviorSimulator.LogSessionStats();
+                }
+                else if (_items.Count == 1)
+                {
+                    _logger.Info($"▶️ Download queue started with first item: {workItem.Title} by {workItem.Artist}");
+                }
+                else if (_items.Count % 100 == 0)
+                {
+                    _logger.Debug($"📊 Queue size: {_items.Count} items");
                 }
             }
         }
@@ -241,6 +272,11 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                 if (_cancellationSources.ContainsKey(item))
                 {
                     _cancellationSources.Remove(item);
+                }
+                
+                if (_items.Count == 0)
+                {
+                    _logger.Info("✅ Download queue is now empty");
                 }
             }
         }
@@ -276,7 +312,28 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
         
         private void LogQueueStatistics()
         {
-            _logger.Info($"Queue statistics: {_items.Count} items in queue, {_totalItemsProcessed} processed, {_totalItemsQueued} total queued, {_failedDownloads} failed, Rate: {_downloadRatePerHour}/hour");
+            _logger.Info("📊 QUEUE STATISTICS 📊");
+            _logger.Info($"   ⏳ Items in queue: {_items.Count}");
+            _logger.Info($"   ✅ Processed: {_totalItemsProcessed}");
+            _logger.Info($"   📥 Total queued: {_totalItemsQueued}");
+            _logger.Info($"   ❌ Failed: {_failedDownloads}");
+            _logger.Info($"   ⚡ Download rate: {_downloadRatePerHour}/hour");
+            
+            // Add behavior mode information
+            string behaviorMode = "None";
+            if (_settings.EnableNaturalBehavior)
+            {
+                behaviorMode = "Natural Behavior";
+                if (_behaviorSimulator.IsHighVolumeMode)
+                {
+                    behaviorMode += " (High Volume Mode)";
+                }
+            }
+            else if (_settings.DownloadDelay)
+            {
+                behaviorMode = "Legacy Delay";
+            }
+            _logger.Info($"   🔄 Behavior Mode: {behaviorMode}");
             
             // Group items by artist to see distribution
             var artistGroups = _items
@@ -284,13 +341,13 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                 .OrderByDescending(g => g.Count())
                 .Take(5)
                 .ToList();
-                
+            
             if (artistGroups.Any())
             {
-                _logger.Info("Top 5 artists in queue:");
+                _logger.Info("📋 Top 5 artists in queue:");
                 foreach (var group in artistGroups)
                 {
-                    _logger.Info($"  - {group.Key}: {group.Count()} items");
+                    _logger.Info($"   • {group.Key}: {group.Count()} items");
                 }
             }
             

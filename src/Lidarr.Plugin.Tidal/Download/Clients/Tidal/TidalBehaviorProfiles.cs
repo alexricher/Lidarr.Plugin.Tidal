@@ -100,7 +100,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal
                     settings.SequentialTrackOrder = Balanced.SequentialTrackOrder;
                     
                     // Set additional properties
-                    settings.MaxConcurrentDownloads = Balanced.MaxConcurrentDownloads;
+                    settings.MaxConcurrentTrackDownloads = Balanced.MaxConcurrentDownloads;
                     settings.MaxDownloadsPerHour = Balanced.MaxDownloadsPerHour;
                     settings.SimulateDelays = Balanced.SimulateDelays;
                     settings.MinDelayBetweenTracksMs = Balanced.MinDelayBetweenTracksMs;
@@ -125,7 +125,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal
                     settings.SequentialTrackOrder = CasualListener.SequentialTrackOrder;
                     
                     // Set additional properties
-                    settings.MaxConcurrentDownloads = CasualListener.MaxConcurrentDownloads;
+                    settings.MaxConcurrentTrackDownloads = CasualListener.MaxConcurrentDownloads;
                     settings.MaxDownloadsPerHour = CasualListener.MaxDownloadsPerHour;
                     settings.SimulateDelays = CasualListener.SimulateDelays;
                     settings.MinDelayBetweenTracksMs = CasualListener.MinDelayBetweenTracksMs;
@@ -150,7 +150,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal
                     settings.SequentialTrackOrder = MusicEnthusiast.SequentialTrackOrder;
                     
                     // Set additional properties
-                    settings.MaxConcurrentDownloads = MusicEnthusiast.MaxConcurrentDownloads;
+                    settings.MaxConcurrentTrackDownloads = MusicEnthusiast.MaxConcurrentDownloads;
                     settings.MaxDownloadsPerHour = MusicEnthusiast.MaxDownloadsPerHour;
                     settings.SimulateDelays = MusicEnthusiast.SimulateDelays;
                     settings.MinDelayBetweenTracksMs = MusicEnthusiast.MinDelayBetweenTracksMs;
@@ -196,7 +196,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal
                 settings.MaxDelayBetweenAlbumsMs == tempSettings.MaxDelayBetweenAlbumsMs &&
                 
                 // Performance settings
-                settings.MaxConcurrentDownloads == tempSettings.MaxConcurrentDownloads &&
+                settings.MaxConcurrentTrackDownloads == tempSettings.MaxConcurrentTrackDownloads &&
                 settings.MaxDownloadsPerHour == tempSettings.MaxDownloadsPerHour &&
                 
                 // Skip simulation settings

@@ -226,8 +226,18 @@ if [ -d "$EXT_LIDARR_DIR/_plugins" ]; then
     rm -rf "$EXT_LIDARR_DIR/_plugins"
 fi
 
-
-
-
-
+# Copy to local path if requested
+if [ -n "$OUTPUT_PATH" ]; then
+    echo "Copying plugin to $OUTPUT_PATH..."
+    
+    # Create the directory if it doesn't exist
+    mkdir -p "$OUTPUT_PATH"
+    
+    # Copy only the essential files
+    cp "$PLUGIN_OUTPUT/Lidarr.Plugin.Tidal.dll" "$OUTPUT_PATH/" || { echo "Error: Failed to copy Lidarr.Plugin.Tidal.dll"; exit 1; }
+    cp "$PLUGIN_OUTPUT/Lidarr.Plugin.Tidal.pdb" "$OUTPUT_PATH/" 2>/dev/null || echo "PDB file not found, skipping"
+    cp "$PLUGIN_OUTPUT/Lidarr.Plugin.Tidal.deps.json" "$OUTPUT_PATH/" 2>/dev/null || echo "deps.json file not found, skipping"
+    
+    echo "Copied plugin files to $OUTPUT_PATH"
+fi
 

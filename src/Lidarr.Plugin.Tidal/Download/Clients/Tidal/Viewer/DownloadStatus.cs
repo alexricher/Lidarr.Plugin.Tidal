@@ -19,11 +19,19 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Viewer
 
     public class DownloadTrackInfo
     {
+        public string Id { get; set; }
         public string Title { get; set; }
         public string Artist { get; set; }
         public string Album { get; set; }
         public string Status { get; set; }
         public DateTime Timestamp { get; set; }
+        public string Bitrate { get; set; }
+        public string Format { get; set; }
+        public long Size { get; set; }
+        public string OutputPath { get; set; }
+        public bool HasLyrics { get; set; }
+        public bool IsExplicit { get; set; }
+        public int TrackNumber { get; set; }
     }
 
     public class DownloadStatus
@@ -171,17 +179,17 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Viewer
                     string directory = Path.GetDirectoryName(_statusFilePath);
                     if (!Directory.Exists(directory))
                     {
-                        _logger.Warn($"Status directory was deleted, recreating: {directory}");
+                        _logger.Warn($"⚠️ Status directory was deleted, recreating: {directory}");
                         Directory.CreateDirectory(directory);
                     }
                     
                     File.WriteAllText(_statusFilePath, json);
-                    _logger.Debug($"Status file updated successfully: {_statusFilePath}");
+                    _logger.Debug($"💾 Status file updated: {_statusFilePath}");
                 }
             }
             catch (Exception ex)
             {
-                _logger.Error(ex, "Error updating download status file");
+                _logger.Error($"❌ Error updating download status file: {ex.Message}");
             }
         }
 
@@ -218,7 +226,52 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Viewer
             }
         }
 
+        // Simple version called from DownloadTaskQueue
         public void AddCompletedTrack(string title, string artist, string album)
+        {
+            AddCompletedTrackWithDetails(
+                Guid.NewGuid().ToString(),  // Generate a unique ID
+                title, 
+                artist, 
+                album,
+                "Unknown",    // bitrate
+                "Unknown",    // format
+                0,            // size
+                string.Empty, // outputPath
+                false,        // hasLyrics
+                false,        // isExplicit
+                0);           // trackNumber
+        }
+
+        // Simple version called from DownloadTaskQueue
+        public void AddFailedTrack(string title, string artist, string album)
+        {
+            AddFailedTrackWithDetails(
+                Guid.NewGuid().ToString(),  // Generate a unique ID
+                title, 
+                artist, 
+                album,
+                "Unknown",    // bitrate
+                "Unknown",    // format
+                0,            // size
+                string.Empty, // outputPath
+                false,        // hasLyrics
+                false,        // isExplicit
+                0);           // trackNumber
+        }
+
+        public void AddCompletedTrackWithDetails(
+            string id,
+            string title, 
+            string artist, 
+            string album,
+            string bitrate,
+            string format,
+            long size,
+            string outputPath,
+            bool hasLyrics,
+            bool isExplicit,
+            int trackNumber)
         {
             lock (_lock)
             {
@@ -230,16 +283,35 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Viewer
 
                 _status.RecentDownloads.Add(new DownloadTrackInfo
                 {
+                    Id = id,
                     Title = title,
                     Artist = artist,
                     Album = album,
                     Status = "Completed",
-                    Timestamp = DateTime.UtcNow
+                    Timestamp = DateTime.UtcNow,
+                    Bitrate = bitrate,
+                    Format = format,
+                    Size = size,
+                    OutputPath = outputPath,
+                    HasLyrics = hasLyrics,
+                    IsExplicit = isExplicit,
+                    TrackNumber = trackNumber
                 });
             }
         }
 
-        public void AddFailedTrack(string title, string artist, string album)
+        public void AddFailedTrackWithDetails(
+            string id,
+            string title, 
+            string artist, 
+            string album,
+            string bitrate,
+            string format,
+            long size,
+            string outputPath,
+            bool hasLyrics,
+            bool isExplicit,
+            int trackNumber)
         {
             lock (_lock)
             {
@@ -251,14 +323,28 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Viewer
 
                 _status.RecentDownloads.Add(new DownloadTrackInfo
                 {
+                    Id = id,
                     Title = title,
                     Artist = artist,
                     Album = album,
                     Status = "Failed",
-                    Timestamp = DateTime.UtcNow
+                    Timestamp = DateTime.UtcNow,
+                    Bitrate = bitrate,
+                    Format = format,
+                    Size = size,
+                    OutputPath = outputPath,
+                    HasLyrics = hasLyrics,
+                    IsExplicit = isExplicit,
+                    TrackNumber = trackNumber
                 });
             }
         }
     }
 }
+
+
+
+
+
+
 

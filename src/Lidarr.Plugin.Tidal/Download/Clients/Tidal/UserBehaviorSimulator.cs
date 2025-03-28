@@ -54,6 +54,11 @@ namespace NzbDrone.Core.Download.Clients.Tidal
         /// Logs current session statistics
         /// </summary>
         void LogSessionStats();
+
+        /// <summary>
+        /// Gets whether the simulator is currently in high volume mode
+        /// </summary>
+        bool IsHighVolumeMode { get; }
     }
 
     /// <summary>
@@ -734,8 +739,9 @@ namespace NzbDrone.Core.Download.Clients.Tidal
                 return false;
             }
             
-            int probability = Math.Clamp((int)(settings.SkipProbability * 100), 0, 100);
-            return _random.Next(100) < probability;
+            // Updated to work directly with float values instead of casting to int
+            float probability = Math.Clamp(settings.SkipProbability, 0.0f, 100.0f);
+            return _random.NextDouble() * 100 < probability;
         }
         
         /// <summary>
@@ -787,14 +793,25 @@ namespace NzbDrone.Core.Download.Clients.Tidal
         /// <param name="itemCount">Number of items in the download queue</param>
         public void AdaptToQueueVolume(TidalSettings settings, int itemCount)
         {
-            if (itemCount > settings.HighVolumeThreshold)
+            // Update high volume session and break durations from settings
+            _highVolumeSessionDuration = TimeSpan.FromMinutes(settings.HighVolumeSessionMinutes);
+            _highVolumeBreakDuration = TimeSpan.FromMinutes(settings.HighVolumeBreakMinutes);
+            
+            if (itemCount > settings.HighVolumeThreshold && settings.EnableHighVolumeHandling)
             {
-                _isHighVolumeMode = true;
-                _logger.Debug($"Entering high volume mode due to {itemCount} items in the queue");
+                if (!_isHighVolumeMode)
+                {
+                    _isHighVolumeMode = true;
+                    _logger.Debug($"Entering high volume mode due to {itemCount} items in the queue");
+                }
             }
             else
             {
-                _isHighVolumeMode = false;
+                if (_isHighVolumeMode)
+                {
+                    _isHighVolumeMode = false;
+                    _logger.Debug("Exiting high volume mode");
+                }
             }
         }
 
