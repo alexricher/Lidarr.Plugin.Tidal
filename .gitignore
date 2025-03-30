@@ -124,6 +124,10 @@ DocProject/Help/*.hhp
 DocProject/Help/Html2
 DocProject/Help/html
 
+# Doc
+/docs/PROGRESS.md
+PROGRESS.md
+
 # Click-Once directory
 publish
 
