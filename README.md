@@ -4,7 +4,7 @@
 
 ![Tidal + Lidarr](https://img.shields.io/badge/Tidal-Lidarr-blue?style=for-the-badge)
 ![License](https://img.shields.io/github/license/alexricher/Lidarr.Plugin.Tidal?style=for-the-badge)
-![Version](https://img.shields.io/badge/version-10.0.1-green?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-10.0.2-green?style=for-the-badge)
 ![Build](https://github.com/alexricher/Lidarr.Plugin.Tidal/actions/workflows/build.yml/badge.svg)
 ![Release](https://github.com/alexricher/Lidarr.Plugin.Tidal/actions/workflows/release.yml/badge.svg)
 
@@ -28,6 +28,8 @@ A powerful plugin that integrates Tidal music streaming service with Lidarr, ena
   - 🛡️ Intelligent rate limiting to avoid detection
   - 🎲 Randomized download patterns mimicking human behavior
   - 📊 Session-based downloading with natural pauses
+  - 💾 Queue persistence across restarts
+  - 🕒 Time-of-day based download adaptation
 - **Audio Processing**:
   - 🧪 FLAC extraction from M4A containers
   - 🔄 Optional AAC to MP3 conversion
@@ -57,9 +59,24 @@ A powerful plugin that integrates Tidal music streaming service with Lidarr, ena
   - 🔁 Track repeat behavior like real users
   - ⏭️ Simulates occasional track skipping
   - ⏰ Time-of-day aware download patterns
+- **Country Code Selection**:
+  - 🌍 Select Tidal API access based on country code
+- **Queue Persistence**:
+  - 💾 Save download queue when Lidarr shuts down and restore when it restarts
+- **Download Status Viewer**:
+  - 📊 Visualize download progress and statistics
 
 ### Recent Updates
 
+#### Version 10.0.2 (Latest)
+- **💾 Queue Persistence**: Added queue persistence across Lidarr restarts
+- **🕒 Time-of-Day Adaptation**: Implemented complete time-of-day adaptation for more realistic download patterns
+- **📊 Enhanced Status Logging**: Improved status logging for queue, circuit breaker, and throttling states
+- **⏲️ Regular Status Updates**: Added periodic updates during paused/throttled states with ETA information
+- **🚦 Circuit Breaker Enhancements**: Better handling and logging for circuit breaker events
+- **🔄 Improved Size Tracking**: More accurate file size tracking throughout the download pipeline
+
+#### Version 10.0.1
 - **📱 Enhanced Docker Support**: Improved fallback mechanisms for containerized environments with multi-level path fallbacks
 - **🛡️ Robust Error Handling**: Better handling of permissions, null references, and edge cases with component isolation
 - **🔍 Advanced Diagnostics**: Detailed logging for easier troubleshooting with download status tracking
@@ -119,6 +136,33 @@ Alternatively, you can install directly from GitHub:
 | Re-encode AAC | Convert AAC audio to MP3 format using FFMPEG |
 | Save Synced Lyrics | Save synchronized lyrics as .lrc files (requires Import Extra Files in Lidarr) |
 | Use LRCLIB | Use external lyrics service as fallback when Tidal doesn't provide lyrics |
+| Enable Queue Persistence | Whether to save and restore the download queue across Lidarr restarts |
+| Queue Persistence Path | Directory to store queue persistence files (defaults to Status Files Path if not specified) |
+
+### Path Validation
+
+The plugin includes robust path validation features to ensure reliable operation:
+
+1. **Automatic Path Testing**: When you save settings, the plugin automatically tests both the Status Files Path and Queue Persistence Path to verify:
+   - Directory exists or can be created
+   - Write permissions are sufficient
+   - No conflicts with other processes
+
+2. **Runtime Path Updates**: If you change paths while Lidarr is running:
+   - The plugin reinitializes the status manager with the new path
+   - Existing download status is preserved
+   - New files are written to the updated location
+
+3. **Error Recovery**: If path issues are detected:
+   - Clear error messages explain the issue
+   - Settings validation prevents saving invalid configurations
+   - The plugin attempts to recover using fallback paths
+
+4. **Test Write Function**: The plugin includes functionality to test write permissions by:
+   - Creating a small temporary test file
+   - Verifying the file was created successfully
+   - Cleaning up the test file automatically
+   - Providing detailed logs about the process
 
 #### Natural Behavior Settings
 
@@ -182,6 +226,7 @@ Alternatively, you can install directly from GitHub:
 | Enable High Volume Handling | Special handling for very large download queues to avoid rate limiting |
 | High Volume Threshold | Number of items in queue to trigger high volume mode |
 | High Volume Session/Break Minutes | Session/break duration for high volume mode (minutes) |
+| Max Tracks Downloads Per Hour | Maximum track downloads allowed per hour across all albums |
 | Enable Throttling Detection | Detects when Tidal is throttling downloads and implements a backoff strategy |
 | Initial/Maximum Backoff Time | Initial/maximum waiting time after detecting throttling (minutes) |
 | Max Retry Attempts | Maximum number of retry attempts for a throttled download before giving up |

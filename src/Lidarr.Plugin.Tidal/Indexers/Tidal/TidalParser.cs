@@ -17,30 +17,36 @@ namespace NzbDrone.Core.Indexers.Tidal
 
         public IList<ReleaseInfo> ParseResponse(IndexerResponse response)
         {
-            var torrentInfos = new List<ReleaseInfo>();
+            var releaseInfos = new List<ReleaseInfo>();
             var content = new HttpResponse<TidalSearchResponse>(response.HttpResponse).Content;
 
             var jsonResponse = JObject.Parse(content).ToObject<TidalSearchResponse>();
-            var releases = jsonResponse.AlbumResults.Items.Select(result => ProcessAlbumResult(result)).ToArray();
-
-            foreach (var task in releases)
+            
+            // Process album results
+            var albumReleases = jsonResponse.AlbumResults.Items.Select(ProcessAlbumResult).ToArray();
+            foreach (var releases in albumReleases)
             {
-                torrentInfos.AddRange(task);
+                releaseInfos.AddRange(releases);
             }
 
-            foreach (var track in jsonResponse.TrackResults.Items)
+            // Process track results (only for albums not already processed)
+            var processedAlbumIds = jsonResponse.AlbumResults.Items.Select(a => a.Id).ToHashSet();
+            var trackTasks = jsonResponse.TrackResults.Items
+                .Where(track => !processedAlbumIds.Contains(track.Album.Id))
+                .Select(async track => await ProcessTrackAlbumResultAsync(track))
+                .ToArray();
+
+            // Wait for all track processing to complete
+            Task.WhenAll(trackTasks).Wait();
+            
+            // Add results from track processing
+            foreach (var task in trackTasks)
             {
-                // make sure the album hasn't already been processed before doing this
-                if (!jsonResponse.AlbumResults.Items.Any(a => a.Id == track.Album.Id))
-                {
-                    var processTrackTask = ProcessTrackAlbumResultAsync(track);
-                    processTrackTask.Wait();
-                    if (processTrackTask.Result != null)
-                        torrentInfos.AddRange(processTrackTask.Result);
-                }
+                if (task.Result != null)
+                    releaseInfos.AddRange(task.Result);
             }
 
-            return torrentInfos
+            return releaseInfos
                 .OrderByDescending(o => o.Size)
                 .ToArray();
         }

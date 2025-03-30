@@ -54,6 +54,12 @@ namespace NzbDrone.Core.Download.Clients.Tidal
         /// Logs current session statistics
         /// </summary>
         void LogSessionStats();
+        
+        /// <summary>
+        /// Returns session statistics as a structured object
+        /// </summary>
+        /// <returns>SessionStatistics object containing current session data</returns>
+        SessionStatistics GetSessionStats();
 
         /// <summary>
         /// Gets whether the simulator is currently in high volume mode
@@ -315,29 +321,30 @@ namespace NzbDrone.Core.Download.Clients.Tidal
         }
         
         /// <summary>
-        /// Checks if the download should be active based on time of day
+        /// Checks if the current time is within the active hours defined in settings
         /// </summary>
-        /// <param name="settings">Tidal settings containing behavior parameters</param>
-        /// <returns>True if the current time is within active hours</returns>
         private bool IsWithinActiveHours(TidalSettings settings)
         {
+            // If time-of-day adaptation is not enabled, always return true
             if (!settings.TimeOfDayAdaptation)
-            {
-                return true; // Always active if adaptation is disabled
-            }
+                return true;
             
+            // Get current hour in 24-hour format (0-23)
             int currentHour = DateTime.Now.Hour;
-            int start = settings.ActiveHoursStart;
-            int end = settings.ActiveHoursEnd;
             
-            // Handle wrap around (e.g., 22 - 6)
-            if (start <= end)
+            // Handle case where active hours span midnight
+            if (settings.ActiveHoursStart > settings.ActiveHoursEnd)
             {
-                return currentHour >= start && currentHour < end;
+                // Example: ActiveHoursStart=22, ActiveHoursEnd=6
+                // This means active from 10PM to 6AM
+                return currentHour >= settings.ActiveHoursStart || currentHour < settings.ActiveHoursEnd;
             }
             else
             {
-                return currentHour >= start || currentHour < end;
+                // Standard case: ActiveHoursStart < ActiveHoursEnd
+                // Example: ActiveHoursStart=8, ActiveHoursEnd=22
+                // This means active from 8AM to 10PM
+                return currentHour >= settings.ActiveHoursStart && currentHour < settings.ActiveHoursEnd;
             }
         }
 
@@ -351,6 +358,12 @@ namespace NzbDrone.Core.Download.Clients.Tidal
         {
             lock (_lock)
             {
+                // Skip delay generation if SimulateDelays is disabled and we're not in natural behavior mode
+                if (!settings.EnableNaturalBehavior && !settings.SimulateDelays && !settings.DownloadDelay)
+                {
+                    return 0.0;
+                }
+                
                 double min, max;
                 
                 switch (delayType)
@@ -384,9 +397,33 @@ namespace NzbDrone.Core.Download.Clients.Tidal
                         break;
                         
                     default:
-                        // Fall back to standard delay settings
-                        min = settings.DownloadDelayMin;
-                        max = settings.DownloadDelayMax;
+                        // Check if we should use MS-based settings instead of seconds-based
+                        if (settings.SimulateDelays)
+                        {
+                            // Convert MS settings to seconds for consistency
+                            if (delayType == DelayType.TrackToTrack || delayType == DelayType.Standard)
+                            {
+                                min = settings.MinDelayBetweenTracksMs / 1000.0;
+                                max = settings.MaxDelayBetweenTracksMs / 1000.0;
+                            }
+                            else if (delayType == DelayType.AlbumToAlbum || delayType == DelayType.ArtistToArtist)
+                            {
+                                min = settings.MinDelayBetweenAlbumsMs / 1000.0;
+                                max = settings.MaxDelayBetweenAlbumsMs / 1000.0;
+                            }
+                            else
+                            {
+                                // Fall back to legacy delay settings
+                                min = settings.DownloadDelayMin;
+                                max = settings.DownloadDelayMax;
+                            }
+                        }
+                        else
+                        {
+                            // Fall back to standard delay settings
+                            min = settings.DownloadDelayMin;
+                            max = settings.DownloadDelayMax;
+                        }
                         break;
                 }
                 
@@ -478,69 +515,224 @@ namespace NzbDrone.Core.Download.Clients.Tidal
         /// <returns>Task representing the delay operation</returns>
         public virtual async Task ApplyNaturalBehaviorDelay(TidalSettings settings, DownloadContext context = null, CancellationToken cancellationToken = default)
         {
-            // Skip if neither natural behavior nor download delay is enabled
+            lock (_lock)
+            {
+                _consecutiveDownloads++;
+                _totalDownloadsInSession++;
+            }
+            
+            // Check if time-of-day adaptation is enabled and if we're outside active hours
+            if (settings.TimeOfDayAdaptation && !IsWithinActiveHours(settings))
+            {
+                // Outside active hours - enforce a longer delay
+                int minutesToActiveHours = GetMinutesToActiveHours(settings);
+                
+                if (minutesToActiveHours <= 30)
+                {
+                    // If active hours start within 30 minutes, wait until then
+                    _logger.Info($"⏰ Outside active hours: Waiting {minutesToActiveHours} minutes until active hours begin at {GetNextActiveHourStart(settings):HH:mm}");
+                    
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromMinutes(minutesToActiveHours), cancellationToken);
+                        _logger.Info("⏰ Active hours have begun, resuming normal download behavior");
+                        return; // Skip additional delays
+                    }
+                    catch (TaskCanceledException)
+                    {
+                        _logger.Debug("Waiting for active hours was canceled");
+                        return;
+                    }
+                }
+                else
+                {
+                    // Otherwise add a substantial delay but don't wait entirely until active hours
+                    _logger.Info($"⏰ Outside active hours: Next active period begins at {GetNextActiveHourStart(settings):HH:mm} in {minutesToActiveHours} minutes");
+                    _logger.Info("⏰ Adding extended delay between downloads due to inactive hours");
+                    
+                    try
+                    {
+                        // Wait 3-5 times the normal album-to-album delay
+                        double multiplier = _random.Next(3, 6);
+                        double baseDelay = GenerateDelay(settings, DelayType.AlbumToAlbum);
+                        double extendedDelay = baseDelay * multiplier;
+                        
+                        _logger.Debug($"Extended delay: {extendedDelay:F1} seconds (base: {baseDelay:F1}s, multiplier: {multiplier:F1}x)");
+                        await Task.Delay(TimeSpan.FromSeconds(extendedDelay), cancellationToken);
+                    }
+                    catch (TaskCanceledException)
+                    {
+                        _logger.Debug("Extended delay was canceled");
+                        return;
+                    }
+                }
+            }
+            
+            // First check if we're configured for natural behavior
             if (!settings.EnableNaturalBehavior && !settings.DownloadDelay)
             {
-                return;
-            }
-            
-            if (settings.EnableNaturalBehavior)
-            {
-                if (_onBreak)
-                {
-                    // Check if we should end the break
-                    if (ShouldEndBreak(settings))
-                    {
-                        _logger.Debug("Ending download session break");
-                        ResetSession();
-                    }
-                    else
-                    {
-                        // Still on break, wait a bit before checking again
-                        _logger.Debug("Still on download break");
-                        await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
-                        return;
-                    }
-                }
-                else if (ShouldTakeBreak(settings))
-                {
-                    StartBreak();
-                    // Apply initial break delay
-                    _logger.Debug($"Beginning a {settings.BreakDurationMinutes} minute download break");
-                    await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
-                    return;
-                }
-                
-                // If time adaptation is enabled and we're outside active hours
-                if (settings.TimeOfDayAdaptation && !IsWithinActiveHours(settings))
-                {
-                    // 80% chance to pause for a longer period during non-active hours
-                    if (_random.NextDouble() < 0.8)
-                    {
-                        _logger.Debug("Outside active hours, applying extended delay");
-                        double inactiveDelay = _random.Next(60, 300); // 1-5 minute delay
-                        await Task.Delay(TimeSpan.FromSeconds(inactiveDelay), cancellationToken);
-                        return;
-                    }
-                }
+                return; // No delay needed
             }
 
-            // Determine the appropriate delay type
-            DelayType delayType = settings.EnableNaturalBehavior ? 
-                DetermineDelayType(context) : 
-                DelayType.Standard;
+            // Determine if we need to take a session break
+            if (settings.EnableNaturalBehavior && !_onBreak && ShouldTakeBreak(settings))
+            {
+                StartBreak();
                 
-            // Apply a delay based on the context
-            double delayDuration = GenerateDelay(settings, delayType);
+                try
+                {
+                    var breakDuration = GetBreakDuration(settings);
+                    _logger.Info($"💤 Taking a break for {breakDuration.TotalMinutes:F1} minutes");
+                    
+                    // Wait for the break duration
+                    await Task.Delay(breakDuration, cancellationToken);
+                    
+                    _onBreak = false;
+                    ResetSession();
+                    _logger.Info("🔄 Break complete, starting a new download session");
+                    _totalSessionsCompleted++;
+                    
+                    return; // No additional delay needed after a break
+                }
+                catch (TaskCanceledException)
+                {
+                    _logger.Debug("Break was canceled");
+                    _onBreak = false;
+                    return;
+                }
+            }
             
-            _logger.Debug($"{delayType} delay: {delayDuration:F2} seconds");
-            await Task.Delay(TimeSpan.FromSeconds(delayDuration), cancellationToken);
+            // If we're on a break and should end it
+            if (settings.EnableNaturalBehavior && _onBreak && ShouldEndBreak(settings))
+            {
+                _onBreak = false;
+                ResetSession();
+                _logger.Info("Break ended, starting a new download session");
+                _totalSessionsCompleted++;
+                return; // No additional delay needed after ending a break
+            }
             
-            // Update the last action time and context tracking
-            _lastActionTime = DateTime.UtcNow;
-            if (settings.EnableNaturalBehavior)
+            // Get the delay for this operation
+            var delayType = (context != null) ? DetermineDelayType(context) : DelayType.Standard;
+            double delaySeconds = GenerateDelay(settings, delayType);
+            
+            // Handle context tracking
+            if (context != null)
             {
                 UpdateContextTracking(context);
+            }
+            
+            if (delaySeconds > 0)
+            {
+                try
+                {
+                    var delay = TimeSpan.FromSeconds(delaySeconds);
+                    if (delaySeconds > 10)
+                    {
+                        _logger.Debug($"💤 Applying {delayType.ToString()} delay of {delaySeconds:F1} seconds");
+                    }
+                    await Task.Delay(delay, cancellationToken);
+                }
+                catch (TaskCanceledException)
+                {
+                    _logger.Debug("Delay was canceled");
+                }
+            }
+            
+            _lastActionTime = DateTime.UtcNow;
+        }
+        
+        /// <summary>
+        /// Calculate how many minutes until the next active hour period begins
+        /// </summary>
+        private int GetMinutesToActiveHours(TidalSettings settings)
+        {
+            DateTime now = DateTime.Now;
+            int currentHour = now.Hour;
+            int currentMinute = now.Minute;
+            
+            // If already in active hours, return 0
+            if (IsWithinActiveHours(settings))
+                return 0;
+            
+            // Case where active hours span midnight (e.g., ActiveHoursStart=22, ActiveHoursEnd=6)
+            if (settings.ActiveHoursStart > settings.ActiveHoursEnd)
+            {
+                // If current time is before end time, active hours start today at ActiveHoursStart
+                if (currentHour < settings.ActiveHoursEnd)
+                {
+                    // Calculate minutes from now until ActiveHoursStart today
+                    return (settings.ActiveHoursStart - currentHour) * 60 - currentMinute;
+                }
+                else
+                {
+                    // Calculate minutes from now until ActiveHoursStart tomorrow
+                    return ((24 - currentHour) + settings.ActiveHoursStart) * 60 - currentMinute;
+                }
+            }
+            else
+            {
+                // Standard case (e.g., ActiveHoursStart=8, ActiveHoursEnd=22)
+                if (currentHour < settings.ActiveHoursStart)
+                {
+                    // Calculate minutes until ActiveHoursStart today
+                    return (settings.ActiveHoursStart - currentHour) * 60 - currentMinute;
+                }
+                else
+                {
+                    // Calculate minutes until ActiveHoursStart tomorrow
+                    return ((24 - currentHour) + settings.ActiveHoursStart) * 60 - currentMinute;
+                }
+            }
+        }
+        
+        /// <summary>
+        /// Get the DateTime when the next active hour period begins
+        /// </summary>
+        private DateTime GetNextActiveHourStart(TidalSettings settings)
+        {
+            DateTime now = DateTime.Now;
+            int currentHour = now.Hour;
+            
+            // If already in active hours, return current time
+            if (IsWithinActiveHours(settings))
+                return now;
+            
+            // Create a starting point at today's active start hour
+            DateTime activeStartToday = now.Date.AddHours(settings.ActiveHoursStart);
+            
+            // Case where active hours span midnight (e.g., ActiveHoursStart=22, ActiveHoursEnd=6)
+            if (settings.ActiveHoursStart > settings.ActiveHoursEnd)
+            {
+                // If we're after today's start time, it starts tomorrow
+                if (currentHour >= settings.ActiveHoursStart)
+                {
+                    return activeStartToday.AddDays(1);
+                }
+                // If we're before today's end time, it starts today
+                else if (currentHour < settings.ActiveHoursEnd)
+                {
+                    return activeStartToday;
+                }
+                // If we're between end and start, it starts today
+                else
+                {
+                    return activeStartToday;
+                }
+            }
+            else
+            {
+                // Standard case (e.g., ActiveHoursStart=8, ActiveHoursEnd=22)
+                // If we're before today's start time, it starts today
+                if (currentHour < settings.ActiveHoursStart)
+                {
+                    return activeStartToday;
+                }
+                // If we're after/equal to today's end time, it starts tomorrow
+                else
+                {
+                    return activeStartToday.AddDays(1);
+                }
             }
         }
         
@@ -820,7 +1012,31 @@ namespace NzbDrone.Core.Download.Clients.Tidal
         /// </summary>
         public void LogSessionStats()
         {
-            _logger.Info($"Session statistics: Total downloads {_totalDownloadsInSession}, Total sessions {_totalSessionsCompleted}, Consecutive downloads {_consecutiveDownloads}, Skipped tracks {_skippedTracks}");
+            var stats = GetSessionStats();
+            
+            TimeSpan sessionDuration = DateTime.UtcNow - _sessionStart;
+            string durationStr = sessionDuration.TotalHours >= 1 
+                ? $"{(int)sessionDuration.TotalHours}h {sessionDuration.Minutes}m" 
+                : $"{sessionDuration.Minutes}m {sessionDuration.Seconds}s";
+                
+            _logger.Info($"🎧 SESSION STATS: {stats.TotalDownloads} downloads, {stats.CompletedSessions} sessions");
+            _logger.Info($"   ⏱️ Duration: {durationStr} | 🔄 Consecutive: {stats.ConsecutiveDownloads} | ⏭️ Skipped: {stats.SkippedTracks}");
+        }
+
+        /// <summary>
+        /// Returns session statistics as a structured object
+        /// </summary>
+        public SessionStatistics GetSessionStats()
+        {
+            return new SessionStatistics
+            {
+                TotalDownloads = _totalDownloadsInSession,
+                CompletedSessions = _totalSessionsCompleted,
+                ConsecutiveDownloads = _consecutiveDownloads,
+                SkippedTracks = _skippedTracks,
+                SessionStart = _sessionStart,
+                IsHighVolumeMode = _isHighVolumeMode
+            };
         }
 
         // Public statistics for the download viewer
@@ -829,5 +1045,54 @@ namespace NzbDrone.Core.Download.Clients.Tidal
         public int DownloadsInCurrentSession => _totalDownloadsInSession;
         public int TotalDownloads => _totalDownloadsInSession;
         public TimeSpan CurrentSessionDuration => DateTime.UtcNow - _sessionStart;
+
+        /// <summary>
+        /// Gets the break duration based on settings and mode
+        /// </summary>
+        private TimeSpan GetBreakDuration(TidalSettings settings)
+        {
+            if (_isHighVolumeMode && settings.EnableHighVolumeHandling)
+            {
+                return TimeSpan.FromMinutes(settings.HighVolumeBreakMinutes);
+            }
+            
+            return TimeSpan.FromMinutes(settings.BreakDurationMinutes);
+        }
+    }
+
+    /// <summary>
+    /// Contains session statistics for the behavior simulator
+    /// </summary>
+    public class SessionStatistics
+    {
+        /// <summary>
+        /// Total downloads in the current session
+        /// </summary>
+        public int TotalDownloads { get; set; }
+        
+        /// <summary>
+        /// Number of completed sessions
+        /// </summary>
+        public int CompletedSessions { get; set; }
+        
+        /// <summary>
+        /// Number of consecutive downloads in the current session
+        /// </summary>
+        public int ConsecutiveDownloads { get; set; }
+        
+        /// <summary>
+        /// Number of tracks skipped in the current session
+        /// </summary>
+        public int SkippedTracks { get; set; }
+        
+        /// <summary>
+        /// Time when the current session started
+        /// </summary>
+        public DateTime SessionStart { get; set; }
+        
+        /// <summary>
+        /// Whether high volume mode is currently active
+        /// </summary>
+        public bool IsHighVolumeMode { get; set; }
     }
 } 

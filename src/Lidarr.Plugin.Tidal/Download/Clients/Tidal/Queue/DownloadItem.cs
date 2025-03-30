@@ -208,8 +208,12 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
             var duration = DateTime.Now - startTime;
             var durationStr = $"{(int)duration.TotalMinutes}m {duration.Seconds}s";
             
-            // Calculate size in MB for display
-            var sizeMB = TotalSize > 0 ? ((double)DownloadedSize / 1024.0 / 1024.0).ToString("F2") : "0";
+            // Calculate size in MB for display - ensure size is correctly displayed
+            var sizeKB = DownloadedSize / 1024.0;
+            var sizeMB = sizeKB / 1024.0;
+            var sizeDisplay = sizeMB >= 1.0 
+                ? $"{sizeMB:F2} MB" 
+                : $"{sizeKB:F2} KB";
             
             // Format quality string
             string qualityStr = Bitrate switch
@@ -228,9 +232,9 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                 logger.Error("==============================================");
                 logger.Error($"❌ ALBUM DOWNLOAD INCOMPLETE: {Album} - {Artist}");
                 logger.Error($"   ✓ Tracks: {totalTracks - _failedTracks}/{totalTracks} completed ({_failedTracks} failed)");
-                logger.Error($"   ✓ Duration: {durationStr}");
-                logger.Error($"   ✓ Size: {sizeMB}MB");
-                logger.Error($"   ✓ Format: {qualityStr}");
+                logger.Error($"   ⏱️ Duration: {durationStr}");
+                logger.Error($"   💾 Size: {sizeDisplay}");
+                logger.Error($"   🎵 Format: {qualityStr}");
                 logger.Error("==============================================");
             }
             else
@@ -239,15 +243,31 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                 logger.Info("==============================================");
                 logger.Info($"📀 ALBUM DOWNLOAD COMPLETE: {Album} - {Artist}");
                 logger.Info($"   ✓ Tracks: {totalTracks}/{totalTracks} completed");
-                logger.Info($"   ✓ Duration: {durationStr}");
-                logger.Info($"   ✓ Size: {sizeMB}MB");
-                logger.Info($"   ✓ Format: {qualityStr}");
+                logger.Info($"   ⏱️ Duration: {durationStr}");
+                logger.Info($"   💾 Size: {sizeDisplay}");
+                logger.Info($"   🎵 Format: {qualityStr}");
                 logger.Info("==============================================");
             }
         }
 
         private async Task DoTrackDownload(string trackId, TidalSettings settings, int trackNumber, int totalTracks, CancellationToken cancellation)
         {
+            // Fix syntax for IsLoggedIn - adding await for the async method
+            bool isLoggedIn = await TidalAPI.Instance.Client.IsLoggedIn();
+            if (!isLoggedIn)
+            {
+                _logger.Error("Tidal is not logged in - cannot download track");
+                throw new InvalidOperationException("Tidal is not logged in. Please check your Tidal configuration.");
+            }
+
+            // Get country code from our manager instead of directly from settings
+            string countryCode = NzbDrone.Plugin.Tidal.TidalCountryManager.Instance?.GetCountryCode() ?? settings.CountryCode;
+            if (string.IsNullOrEmpty(countryCode))
+            {
+                _logger.Error("Missing country code - cannot download track");
+                throw new InvalidOperationException("Country code is missing. Please configure a valid country in Tidal settings.");
+            }
+
             // 1. Fetch track details
             var (page, songTitle, artistName, albumTitle, duration) = await FetchTrackDetails(trackId, cancellation);
             
@@ -260,7 +280,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
             // 2. Generate file path and ensure directory exists
             var (outPath, outDir) = await GenerateTrackFilePath(page, settings, cancellation);
 
-            // 3. Download the raw track file
+            // 3. Download the track file
             await DownloadTrackFile(trackId, outPath, cancellation);
             _logger?.Info($"📥 {logPrefix} \"{songTitle}\" - File download complete");
 
@@ -269,7 +289,8 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
 
             // 5. Process lyrics (Tidal + Backup)
             var (plainLyrics, syncLyrics) = await ProcessLyrics(trackId, songTitle, artistName, albumTitle, duration, settings, cancellation);
-            _logger?.Debug($"🎭 {logPrefix} \"{songTitle}\" - Lyrics processed (Has lyrics: {!string.IsNullOrEmpty(plainLyrics)})");
+            bool hasLyrics = !string.IsNullOrEmpty(plainLyrics);
+            _logger?.Debug($"🎭 {logPrefix} \"{songTitle}\" - Lyrics processed (Has lyrics: {hasLyrics})");
 
             // 6. Apply metadata and create LRC file
             await ApplyMetadataAndLrc(trackId, outPath, outDir, page, plainLyrics, syncLyrics, settings, cancellation);
@@ -316,13 +337,96 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
         {
             // Create a local variable to use with Interlocked operations
             long downloadedSize = 0;
+            long fileSize = 0;
             
-            // Using Interlocked.Add which takes the value to add (i) and returns the new sum.
-            // Use the local variable for the tracking and then update the property.
-            await TidalAPI.Instance.Client.Downloader.WriteRawTrackToFile(trackId, Bitrate, outPath, (i) => { 
-                downloadedSize = Interlocked.Add(ref downloadedSize, i);
-                DownloadedSize = downloadedSize;
+            // Try to get file size from track info if possible
+            try 
+            {
+                // Use existing API methods to get track info
+                var trackInfo = await TidalAPI.Instance.Client.API.GetTrack(trackId, cancellation);
+                if (trackInfo != null && trackInfo["audioQuality"] != null)
+                {
+                    // Some tracks have duration & bit rate - can estimate size
+                    if (trackInfo["duration"] != null)
+                    {
+                        int durationSeconds = trackInfo["duration"].Value<int>();
+                        var quality = Bitrate.ToString();
+                        
+                        // Rough estimates based on average bitrates
+                        double bitrateMbps = quality switch
+                        {
+                            "LOW" => 0.096, // 96kbps
+                            "HIGH" => 0.320, // 320kbps
+                            "LOSSLESS" => 1.411, // 1411kbps for CD quality
+                            "HI_RES_LOSSLESS" => 3.0, // Variable but often around 3Mbps
+                            _ => 0.320
+                        };
+                        
+                        // Calculate approximate file size in bytes (bitrate * duration)
+                        fileSize = (long)(bitrateMbps * 1024 * 1024 * durationSeconds / 8);
+                        
+                        // Update total size for the download tracking
+                        TotalSize += fileSize;
+                        
+                        // Log approximate size
+                        double sizeMB = fileSize / 1024.0 / 1024.0;
+                        if (sizeMB > 0)
+                        {
+                            _logger?.Debug($"💾 Estimated file size: ~{sizeMB:F2} MB (based on {durationSeconds}s duration at {bitrateMbps:F3} Mbps)");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger?.Debug($"Could not estimate file size: {ex.Message}");
+            }
+            
+            // Using Interlocked.Add to safely track progress
+            // Track progress more visibly with percentage updates
+            await TidalAPI.Instance.Client.Downloader.WriteRawTrackToFile(trackId, Bitrate, outPath, (increment) => { 
+                long newSize = Interlocked.Add(ref downloadedSize, increment);
+                
+                // Update our downloaded size for reporting
+                DownloadedSize += increment;
+                
+                // If we have a file size estimate, report percentage occasionally
+                if (fileSize > 0 && newSize % Math.Max(fileSize / 10, 1024) < increment && newSize > 0)
+                {
+                    int percentage = (int)(100.0 * newSize / fileSize);
+                    _logger?.Debug($"⬇️ Download progress: {percentage}% ({(newSize / 1024.0 / 1024.0):F2} MB)");
+                }
+                else if (newSize % (1024 * 1024) < increment) // Otherwise report every MB
+                {
+                    _logger?.Debug($"⬇️ Download progress: {(newSize / 1024.0 / 1024.0):F2} MB");
+                }
             }, cancellation); 
+            
+            // After download completes, update with the actual file size from the file system
+            try
+            {
+                if (File.Exists(outPath))
+                {
+                    var fileInfo = new FileInfo(outPath);
+                    long actualSize = fileInfo.Length;
+                    
+                    // If the file size is significantly different from our estimate or tracking
+                    if (Math.Abs(actualSize - fileSize) > 1024 * 1024 || fileSize == 0)
+                    {
+                        _logger?.Debug($"💾 Updating size from file system: {(actualSize / 1024.0 / 1024.0):F2} MB");
+                        
+                        // Adjust our total size to account for the difference
+                        TotalSize = TotalSize - fileSize + actualSize;
+                        
+                        // Update downloadedSize to match the actual file size
+                        DownloadedSize = DownloadedSize - downloadedSize + actualSize;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger?.Debug($"Could not get actual file size: {ex.Message}");
+            }
         }
 
         private async Task<(string plainLyrics, string syncLyrics)> ProcessLyrics(string trackId, string songTitle, string artistName, string albumTitle, int duration, TidalSettings settings, CancellationToken cancellation)
@@ -348,7 +452,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
 
                 // Check if backup provider is enabled, LRCLIB is selected, and lyrics are still needed
                 if (settings.UseLRCLIB && settings.BackupLyricProvider == (int)LyricProviderSource.LRCLIB &&
-                    (string.IsNullOrWhiteSpace(plainLyrics) || (settings.SaveSyncedLyrics && !(syncLyrics?.Any() ?? false))))
+                    (string.IsNullOrWhiteSpace(plainLyrics) || (settings.SaveSyncedLyrics && (syncLyrics == null || syncLyrics.Length == 0))))
                 {
                     _logger?.Debug($"🔍 Searching backup lyrics provider for \"{songTitle}\" by {artistName}");
                     // Use the configured URL
@@ -360,7 +464,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                             plainLyrics = lyrics.Value.plainLyrics;
                             _logger?.Debug($"🎭 Plain lyrics found from backup provider");
                         }
-                        if (settings.SaveSyncedLyrics && !(syncLyrics?.Any() ?? false))
+                        if (settings.SaveSyncedLyrics && (syncLyrics == null || syncLyrics.Length == 0))
                         {
                             syncLyrics = lyrics.Value.syncLyrics;
                             _logger?.Debug($"🎭 Synced lyrics found from backup provider");

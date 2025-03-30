@@ -2,6 +2,50 @@
 
 All notable changes to this project will be documented in this file.
 
+## [10.0.2.2] - 2024-04-01
+
+### Added
+- **Queue Persistence**: Added functionality to save and restore the download queue across Lidarr restarts
+  - Added a configurable path for queue persistence files
+  - Will fallback to status files path or download path if not specified
+  - Can be disabled completely via settings
+- **Country Code Management**: Improved handling of country codes for Tidal API
+  - Added support for selecting country from predefined list
+  - Added support for custom country codes
+  - Implemented without modifying external TidalSharp library
+- **Time-of-Day Adaptation**: Implemented complete time-of-day adaptation functionality
+  - Queue processing respects active hours configuration
+  - Download delays increase outside of active hours
+  - Detailed logging of time-based behavior
+- **Enhanced Status Logging**: Improved status logging for various system states
+  - Added periodic status updates during paused states
+  - Added human-readable time formatting for ETAs
+  - Improved rate limit information with time remaining
+  - Enhanced circuit breaker event logging
+- **Circuit Breaker Improvements**:
+  - Added detailed logging when circuit breaker triggers
+  - Added countdown information for when processing will resume
+  - Added a background task to periodically log circuit breaker status
+- **Size Tracking**: Fixed and improved file size tracking throughout the download pipeline
+- **Improved Path Handling**:
+  - Added robust path validation for both status and queue persistence paths
+  - Implemented test write functionality to verify permissions before committing
+  - Added ability to reinitialize paths at runtime when settings change
+  - Enhanced error recovery for path-related operations
+  - Added detailed diagnostic logging for file access operations
+
+### Fixed
+- Fixed calculation of time remaining in rate-limited situations
+- Fixed issues with throttling detection and reporting
+- Improved error handling in download pipeline
+- Enhanced file size estimation and verification
+- Fixed potential file access issues with persistence paths
+- Fixed null reference exceptions in country code management
+- Improved handling of path changes during runtime
+- Enhanced robustness of status manager initialization process
+- Added retry mechanisms for directory creation operations
+- Fixed cross-platform path handling issues
+
 ## [10.0.2.1] - 2024-03-25
 
 ### Fixed

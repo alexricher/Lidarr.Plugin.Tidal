@@ -17,6 +17,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal
     public class Tidal : DownloadClientBase<TidalSettings>
     {
         private readonly ITidalProxy _proxy;
+        private readonly new Logger _logger;
 
         public Tidal(ITidalProxy proxy,
                       IConfigService configService,
@@ -26,6 +27,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal
             : base(configService, diskProvider, remotePathMappingService, logger)
         {
             _proxy = proxy;
+            _logger = logger;
         }
 
         public override string Protocol => nameof(TidalDownloadProtocol);
@@ -68,7 +70,48 @@ namespace NzbDrone.Core.Download.Clients.Tidal
 
         protected override void Test(List<ValidationFailure> failures)
         {
-            // given the way the code is setup, we don't really need to do anything here
+            try
+            {
+                // Initialize TidalCountryManager if needed
+                if (TidalCountryManager.Instance == null)
+                {
+                    _logger.Info("Initializing TidalCountryManager during test");
+                    TidalCountryManager.Initialize(null, _logger);
+                }
+                else
+                {
+                    // Update the country code in case it changed
+                    TidalCountryManager.Instance.UpdateCountryCode(Settings);
+                    _logger.Info($"Updated TidalCountryManager with country code: {Settings.CountryCode}");
+                }
+
+                // Test status file path if the feature is enabled
+                if (Settings.GenerateStatusFiles && !string.IsNullOrWhiteSpace(Settings.StatusFilesPath))
+                {
+                    _logger.Info($"Testing status file path: {Settings.StatusFilesPath}");
+                    if (!Settings.TestStatusPath(_logger))
+                    {
+                        failures.Add(new ValidationFailure("StatusFilesPath", 
+                            "Unable to write to the specified status files path. Please ensure the directory exists and has the correct permissions."));
+                    }
+                }
+
+                // Test queue persistence path if the feature is enabled
+                if (Settings.EnableQueuePersistence && !string.IsNullOrWhiteSpace(Settings.ActualQueuePersistencePath))
+                {
+                    _logger.Info($"Testing queue persistence path: {Settings.ActualQueuePersistencePath}");
+                    if (!Settings.TestQueuePersistencePath(_logger))
+                    {
+                        failures.Add(new ValidationFailure("QueuePersistencePath", 
+                            "Unable to write to the specified queue persistence path. Please ensure the directory exists and has the correct permissions."));
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error during Tidal download client test");
+                failures.Add(new ValidationFailure("Connection", $"Error testing Tidal settings: {ex.Message}"));
+            }
         }
     }
 }
