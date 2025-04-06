@@ -180,11 +180,12 @@ namespace NzbDrone.Core.Indexers.Tidal
                 // Ensure we're initialized
                 EnsureInitialized();
 
-                _logger.Debug($"Waiting for search semaphore (current count: {_searchSemaphore.CurrentCount})");
+                int currentActiveSearches = Math.Max(0, _maxConcurrentSearches - _searchSemaphore.CurrentCount);
+                _logger.Debug($"Waiting for search semaphore (active searches: {currentActiveSearches}/{_maxConcurrentSearches}, available slots: {_searchSemaphore.CurrentCount})");
 
                 // IMPROVED: Use 90-second timeout to match the request generator
                 bool acquired = false;
-                
+
                 // Try to acquire the semaphore first without a timeout to see if it's immediately available
                 try
                 {
@@ -194,22 +195,24 @@ namespace NzbDrone.Core.Indexers.Tidal
                 {
                     throw; // Propagate cancellation
                 }
-                
+
                 if (!acquired)
                 {
                     // IMPROVED: Log more user-friendly information about wait times
-                    _logger.Info($"🔄 Search rate limit active - waiting for a slot to become available (active searches: {Math.Max(0, _maxConcurrentSearches - _searchSemaphore.CurrentCount)})");
-                    
+                    int waitingActiveSearches = Math.Max(0, _maxConcurrentSearches - _searchSemaphore.CurrentCount);
+                    _logger.Info($"🔄 Search rate limit active - waiting for a slot to become available (active searches: {waitingActiveSearches}/{_maxConcurrentSearches})");
+
                     // IMPROVED: Longer timeout and more informative error message
                     acquired = await _searchSemaphore.WaitAsync(TimeSpan.FromSeconds(90), cancellationToken);
-                    
+
                     if (!acquired)
                     {
                         throw new TimeoutException("Failed to acquire search semaphore after 90 seconds - system may be overloaded");
                     }
                 }
 
-                _logger.Debug("Search semaphore acquired successfully");
+                int acquiredActiveSearches = Math.Max(0, _maxConcurrentSearches - _searchSemaphore.CurrentCount);
+                _logger.Debug($"Search semaphore acquired successfully (active searches: {acquiredActiveSearches}/{_maxConcurrentSearches})");
 
                 // Ensure rate limiter is not null before using it
                 if (_rateLimiter == null)
@@ -223,7 +226,7 @@ namespace NzbDrone.Core.Indexers.Tidal
                     // IMPROVED: Use a shorter timeout for the token bucket rate limiter
                     var rateLimiterTask = _rateLimiter.WaitForSlot(TidalRequestType.Search, cancellationToken);
                     var timeoutTask = Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
-                    
+
                     var completedTask = await Task.WhenAny(rateLimiterTask, timeoutTask);
                     if (completedTask == timeoutTask)
                     {
@@ -281,7 +284,8 @@ namespace NzbDrone.Core.Indexers.Tidal
                     if (_searchSemaphore.CurrentCount < _maxConcurrentSearches)
                     {
                         _searchSemaphore.Release();
-                        _logger.DebugWithEmoji(LogEmojis.Process, "Search semaphore released");
+                        int releasedActiveSearches = Math.Max(0, _maxConcurrentSearches - _searchSemaphore.CurrentCount);
+                        _logger.DebugWithEmoji(LogEmojis.Process, $"Search semaphore released (active searches: {releasedActiveSearches}/{_maxConcurrentSearches})");
                     }
                     else
                     {
@@ -348,12 +352,12 @@ namespace NzbDrone.Core.Indexers.Tidal
             {
                 return; // Nothing to check
             }
-            
+
             // If currentCount > maxCount, the semaphore is in a bad state
             if (_searchSemaphore.CurrentCount > _maxConcurrentSearches)
             {
                 _logger.Warn("Semaphore in invalid state! CurrentCount exceeds max value - reinitializing");
-                
+
                 lock (_initLock)
                 {
                     try

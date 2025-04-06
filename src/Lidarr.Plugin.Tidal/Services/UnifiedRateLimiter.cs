@@ -8,13 +8,15 @@ using NzbDrone.Core.Indexers.Tidal;
 using NzbDrone.Core.Download.Clients.Tidal.Services;
 using Lidarr.Plugin.Tidal.Download.Clients.Tidal.Utilities;
 using Lidarr.Plugin.Tidal.Services.Logging;
+using NzbDrone.Plugin.Tidal.Constants;
+using NzbDrone.Plugin.Tidal.Indexers.Tidal;
 
 namespace Lidarr.Plugin.Tidal.Services
 {
     /// <summary>
-    /// Unified rate limiter that handles both download and search rate limiting
-    /// This is the primary implementation of IRateLimiter, consolidating functionality
-    /// from other rate limiter implementations.
+    /// Unified rate limiter that handles both download and search rate limiting.
+    /// This is the definitive implementation of IRateLimiter, consolidating all rate limiting functionality.
+    /// All other rate limiting implementations should be phased out in favor of this one.
     /// </summary>
     public class UnifiedRateLimiter : IRateLimiter
     {
@@ -23,10 +25,17 @@ namespace Lidarr.Plugin.Tidal.Services
         private SemaphoreSlim _searchSemaphore;
         private readonly object _lockObject = new();
         private volatile bool _disposed;
+        
+        // Metrics tracking
+        private long _totalRequests;
+        private long _throttledRequests;
+        private DateTime _lastMetricsLog = DateTime.MinValue;
+        private readonly TimeSpan _metricsLogInterval = TimeSpan.FromHours(1);
 
         // Default values
-        private const int DEFAULT_MAX_CONCURRENT_SEARCHES = 5;
-        private const int DEFAULT_MAX_REQUESTS_PER_MINUTE = 30;
+        private const int DEFAULT_MAX_CONCURRENT_SEARCHES = TidalConstants.DefaultMaxConcurrentSearches;
+        private const int DEFAULT_MAX_REQUESTS_PER_MINUTE = TidalConstants.DefaultMaxRequestsPerMinute;
+        private const int DEFAULT_MAX_DOWNLOADS_PER_HOUR = TidalConstants.DefaultDownloadsPerHour;
 
         // Lock for thread-safe access to _searchSemaphore
         private readonly object _semaphoreLock = new();
@@ -59,9 +68,53 @@ namespace Lidarr.Plugin.Tidal.Services
                         return 0;
                     }
 
-                    return _searchSemaphore.AvailableWaitHandle != null ?
-                        DEFAULT_MAX_CONCURRENT_SEARCHES - _searchSemaphore.CurrentCount : 0;
+                    int maxCount = 0;
+                    
+                    // Get the max count from the semaphore if available
+                    try
+                    {
+                        // Use reflection to get the maximum count if available
+                        var field = _searchSemaphore.GetType().GetField("m_maxCount", 
+                            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                        if (field != null)
+                        {
+                            maxCount = (int)field.GetValue(_searchSemaphore);
+                        }
+                        else
+                        {
+                            maxCount = DEFAULT_MAX_CONCURRENT_SEARCHES;
+                        }
+                    }
+                    catch
+                    {
+                        maxCount = DEFAULT_MAX_CONCURRENT_SEARCHES;
+                    }
+
+                    return maxCount - _searchSemaphore.CurrentCount;
                 }
+            }
+        }
+        
+        /// <summary>
+        /// Gets the total number of requests processed since initialization
+        /// </summary>
+        public long TotalRequests => Interlocked.Read(ref _totalRequests);
+        
+        /// <summary>
+        /// Gets the total number of requests that were throttled
+        /// </summary>
+        public long ThrottledRequests => Interlocked.Read(ref _throttledRequests);
+        
+        /// <summary>
+        /// Gets the throttling percentage (throttled requests / total requests)
+        /// </summary>
+        public double ThrottlingPercentage
+        {
+            get
+            {
+                var total = TotalRequests;
+                if (total == 0) return 0;
+                return (double)ThrottledRequests / total * 100.0;
             }
         }
 
@@ -78,6 +131,7 @@ namespace Lidarr.Plugin.Tidal.Services
 
             try
             {
+                _logger.InfoWithEmoji(LogEmojis.Settings, "Initializing unified rate limiter with current settings");
                 InitializeRateLimiters(downloadSettings, indexerSettings);
             }
             catch (ArgumentException ex)
@@ -101,7 +155,7 @@ namespace Lidarr.Plugin.Tidal.Services
         {
             try
             {
-                _logger?.Debug("Initializing default rate limiters");
+                _logger?.InfoWithEmoji(LogEmojis.Warning, "Using safe default rate limits");
 
                 // Initialize search semaphore with default values
                 lock (_semaphoreLock)
@@ -117,7 +171,7 @@ namespace Lidarr.Plugin.Tidal.Services
 
                 if (!_rateLimiters.ContainsKey(TidalRequestType.Download))
                 {
-                    _rateLimiters[TidalRequestType.Download] = new TokenBucketRateLimiter(30 * 60, _logger); // 30 downloads per hour
+                    _rateLimiters[TidalRequestType.Download] = new TokenBucketRateLimiter(DEFAULT_MAX_DOWNLOADS_PER_HOUR, _logger); 
                 }
             }
             catch (ArgumentException ex)
@@ -135,7 +189,7 @@ namespace Lidarr.Plugin.Tidal.Services
         /// </summary>
         private void InitializeRateLimiters(TidalSettings downloadSettings, TidalIndexerSettings indexerSettings)
         {
-            _logger?.Debug("Initializing rate limiters");
+            _logger?.Debug("Initializing rate limiters with custom settings");
 
             // Initialize search semaphore
             var maxConcurrentSearches = indexerSettings?.MaxConcurrentSearches ?? DEFAULT_MAX_CONCURRENT_SEARCHES;
@@ -153,7 +207,35 @@ namespace Lidarr.Plugin.Tidal.Services
             // Initialize download rate limiter
             var downloadRateLimiter = TokenBucketRateLimiter.FromTidalSettings(downloadSettings, _logger);
             _rateLimiters[TidalRequestType.Download] = downloadRateLimiter;
-            _logger?.Debug($"Initialized download rate limiter: {downloadSettings?.MaxDownloadsPerHour ?? 30} downloads/hour");
+            _logger?.Debug($"Initialized download rate limiter: {downloadSettings?.MaxDownloadsPerHour ?? TidalConstants.DefaultDownloadsPerHour} downloads/hour");
+            
+            // Log summary
+            _logger?.InfoWithEmoji(LogEmojis.Settings, 
+                $"Rate limiting configured: {maxConcurrentSearches} concurrent searches, " +
+                $"{indexerSettings?.MaxRequestsPerMinute ?? DEFAULT_MAX_REQUESTS_PER_MINUTE} searches/minute, " +
+                $"{downloadSettings?.MaxDownloadsPerHour ?? TidalConstants.DefaultDownloadsPerHour} downloads/hour");
+        }
+
+        /// <summary>
+        /// Logs current rate limiting metrics if sufficient time has passed since the last log
+        /// </summary>
+        private void LogMetricsIfNeeded()
+        {
+            var now = DateTime.UtcNow;
+            if ((now - _lastMetricsLog) >= _metricsLogInterval)
+            {
+                _lastMetricsLog = now;
+                _logger?.InfoWithEmoji(LogEmojis.Stats, 
+                    $"Rate limiting metrics: {TotalRequests} total requests, " +
+                    $"{ThrottledRequests} throttled ({ThrottlingPercentage:F1}%)");
+                
+                // Log detailed stats for each rate limiter
+                foreach (var kvp in _rateLimiters)
+                {
+                    _logger?.Debug($"Rate limiter for {kvp.Key}: {kvp.Value.GetCurrentTokenCount():F1}/{kvp.Value.GetMaxTokenCount():F1} tokens, " +
+                        $"{kvp.Value.GetCurrentRateLimit()} ops/hour");
+                }
+            }
         }
 
         /// <summary>
@@ -202,58 +284,101 @@ namespace Lidarr.Plugin.Tidal.Services
         public async Task WaitForSlot(TidalRequestType requestType, CancellationToken token = default)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(UnifiedRateLimiter));
+            
+            // Increment total requests counter
+            Interlocked.Increment(ref _totalRequests);
+            bool wasThrottled = false;
+            DateTime startTime = DateTime.UtcNow;
 
-            // First, acquire semaphore slot for concurrent requests (only for Search)
-            SemaphoreSlim semaphore = null;
-            lock (_semaphoreLock)
+            try
             {
-                if (requestType == TidalRequestType.Search && _searchSemaphore != null)
+                // First, acquire semaphore slot for concurrent requests (only for Search)
+                SemaphoreSlim semaphore = null;
+                lock (_semaphoreLock)
                 {
-                    semaphore = _searchSemaphore;
-                    _logger?.DebugWithEmoji(LogEmojis.Wait, $"Waiting for search semaphore slot (available: {_searchSemaphore.CurrentCount})");
+                    if (requestType == TidalRequestType.Search && _searchSemaphore != null)
+                    {
+                        semaphore = _searchSemaphore;
+                        _logger?.DebugWithEmoji(LogEmojis.Wait, $"Waiting for search semaphore slot (available: {_searchSemaphore.CurrentCount})");
+                    }
                 }
-            }
 
-            if (semaphore != null)
-            {
+                if (semaphore != null)
+                {
+                    try
+                    {
+                        await semaphore.WaitAsync(token).ConfigureAwait(false);
+                        _logger?.DebugWithEmoji(LogEmojis.Debug, "Search semaphore slot acquired");
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        _logger?.DebugWithEmoji(LogEmojis.Cancel, "Search semaphore wait was canceled");
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger?.ErrorWithEmoji(LogEmojis.Error, ex, "Error waiting for search semaphore");
+                        throw;
+                    }
+                }
+
                 try
                 {
-                    await semaphore.WaitAsync(token).ConfigureAwait(false);
-                    _logger?.DebugWithEmoji(LogEmojis.Debug, "Search semaphore slot acquired");
+                    // Get the rate limiter for the request type
+                    if (!_rateLimiters.TryGetValue(requestType, out var rateLimiter))
+                    {
+                        _logger?.Warn($"Unknown request type: {requestType}, using default wait logic");
+                        await Task.Delay(100, token).ConfigureAwait(false);
+                        return;
+                    }
+
+                    // Check if wait is needed
+                    var waitTime = rateLimiter.GetEstimatedWaitTime();
+                    if (waitTime > TimeSpan.Zero)
+                    {
+                        wasThrottled = true;
+                        if (waitTime.TotalSeconds > 1)
+                        {
+                            _logger?.DebugWithEmoji(LogEmojis.Wait, 
+                                $"Rate limit hit for {requestType}, waiting {waitTime.TotalSeconds:F1}s (current: {rateLimiter.GetCurrentTokenCount():F1}, max: {rateLimiter.GetMaxTokenCount():F1})");
+                        }
+                        
+                        // Track throttled requests
+                        Interlocked.Increment(ref _throttledRequests);
+                    }
+
+                    // Wait for a token to become available
+                    await rateLimiter.WaitForTokenAsync(token).ConfigureAwait(false);
+                    
+                    // Log metrics periodically
+                    LogMetricsIfNeeded();
                 }
                 catch (OperationCanceledException)
                 {
-                    _logger?.DebugWithEmoji(LogEmojis.Cancel, "Search semaphore wait was canceled");
+                    _logger?.DebugWithEmoji(LogEmojis.Cancel, $"Rate limiter wait was canceled for {requestType}");
                     throw;
                 }
                 catch (Exception ex)
                 {
-                    _logger?.ErrorWithEmoji(LogEmojis.Error, ex, "Error waiting for search semaphore");
+                    _logger?.ErrorWithEmoji(LogEmojis.Error, ex, $"Error waiting for rate limiter for {requestType}");
+                    
+                    // Try to release the semaphore if we had acquired it
+                    if (semaphore != null)
+                    {
+                        try { semaphore.Release(); } catch { /* Ignore errors during cleanup */ }
+                    }
+                    
                     throw;
                 }
             }
-
-            try
+            finally
             {
-                // Get the rate limiter for the request type
-                if (!_rateLimiters.TryGetValue(requestType, out var rateLimiter))
+                var elapsed = DateTime.UtcNow - startTime;
+                if (wasThrottled && elapsed.TotalSeconds > 5)
                 {
-                    _logger?.Warn($"Unknown request type: {requestType}, using default wait logic");
-                    await Task.Delay(100, token).ConfigureAwait(false);
-                    return;
+                    _logger?.InfoWithEmoji(LogEmojis.Time, 
+                        $"Rate limiting for {requestType} took {elapsed.TotalSeconds:F1}s");
                 }
-
-                // Wait for a token to become available
-                await rateLimiter.WaitForTokenAsync(token).ConfigureAwait(false);
-            }
-            catch (Exception)
-            {
-                // If token wait fails, release the semaphore slot
-                if (requestType == TidalRequestType.Search)
-                {
-                    ReleaseSemaphore();
-                }
-                throw;
             }
         }
 
@@ -371,7 +496,7 @@ namespace Lidarr.Plugin.Tidal.Services
                     // Update download rate limiter
                     if (_rateLimiters.TryGetValue(TidalRequestType.Download, out var downloadLimiter))
                     {
-                        var maxDownloadsPerHour = downloadSettings?.MaxDownloadsPerHour ?? 30;
+                        var maxDownloadsPerHour = downloadSettings?.MaxDownloadsPerHour ?? TidalConstants.DefaultDownloadsPerHour;
                         downloadLimiter.UpdateSettings(maxDownloadsPerHour);
                         _logger?.Debug($"Updated download rate limiter: {maxDownloadsPerHour} downloads/hour");
                     }

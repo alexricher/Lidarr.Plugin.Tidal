@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Threading.Tasks;
 using FluentValidation.Results;
 using NLog;
@@ -161,6 +162,121 @@ namespace NzbDrone.Core.Download.Clients.Tidal
         private ValidationResult ValidationError(string message)
         {
             return new ValidationResult(new List<ValidationFailure> { new ValidationFailure("", message) });
+        }
+
+        /// <summary>
+        /// Called when the application starts up.
+        /// Ensures the queue persistence system is properly initialized.
+        /// </summary>
+        public void OnApplicationStartup()
+        {
+            _logger.Info("[TIDAL] Performing startup initialization");
+
+            try
+            {
+                // Validate settings
+                if (Settings == null)
+                {
+                    _logger.Warn("[TIDAL] Settings not available during startup, using defaults");
+                    return;
+                }
+
+                // Ensure queue persistence path is valid
+                if (Settings.EnableQueuePersistence)
+                {
+                    // Get the effective path
+                    string persistencePath = Settings.ActualQueuePersistencePath;
+                    
+                    if (string.IsNullOrWhiteSpace(persistencePath))
+                    {
+                        _logger.Warn("[TIDAL] Queue persistence is enabled but path is empty. Creating default path.");
+                        
+                        // Try to use temp directory as fallback
+                        string tempPath = Path.Combine(Path.GetTempPath(), "Lidarr", "TidalQueue");
+                        
+                        try
+                        {
+                            if (!Directory.Exists(tempPath))
+                            {
+                                Directory.CreateDirectory(tempPath);
+                                _logger.Info($"[TIDAL] Created default queue persistence directory: {tempPath}");
+                            }
+                            
+                            // Update settings with the new path
+                            Settings.QueuePersistencePath = tempPath;
+                            _logger.Info($"[TIDAL] Set queue persistence path to: {tempPath}");
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Error(ex, "[TIDAL] Failed to create default queue persistence directory");
+                        }
+                    }
+                    else
+                    {
+                        // Verify the path exists and is writable
+                        try
+                        {
+                            if (!Directory.Exists(persistencePath))
+                            {
+                                _logger.Info($"[TIDAL] Creating queue persistence directory: {persistencePath}");
+                                Directory.CreateDirectory(persistencePath);
+                            }
+                            
+                            // Test if the directory is writable
+                            string testFilePath = Path.Combine(persistencePath, ".startup_write_test");
+                            File.WriteAllText(testFilePath, "Test");
+                            File.Delete(testFilePath);
+                            _logger.Info($"[TIDAL] Verified write access to queue persistence path: {persistencePath}");
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Error(ex, $"[TIDAL] Error validating queue persistence path: {persistencePath}");
+                            
+                            // Try to use temp directory as fallback
+                            string tempPath = Path.Combine(Path.GetTempPath(), "Lidarr", "TidalQueue");
+                            try
+                            {
+                                if (!Directory.Exists(tempPath))
+                                {
+                                    Directory.CreateDirectory(tempPath);
+                                }
+                                
+                                // Test if the directory is writable
+                                string testFilePath = Path.Combine(tempPath, ".startup_write_test");
+                                File.WriteAllText(testFilePath, "Test");
+                                File.Delete(testFilePath);
+                                
+                                // Update settings with the new path
+                                Settings.QueuePersistencePath = tempPath;
+                                _logger.Warn($"[TIDAL] Using fallback queue persistence path: {tempPath}");
+                            }
+                            catch (Exception fallbackEx)
+                            {
+                                _logger.Error(fallbackEx, "[TIDAL] Failed to create fallback queue persistence directory");
+                            }
+                        }
+                    }
+
+                    // Reinitialize the proxy with the updated settings
+                    try
+                    {
+                        _proxy.UpdateSettings(Settings);
+                        _logger.Info("[TIDAL] Queue persistence system initialized successfully");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "[TIDAL] Error updating proxy settings during startup");
+                    }
+                }
+                else
+                {
+                    _logger.Info("[TIDAL] Queue persistence is disabled in settings");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "[TIDAL] Error during application startup initialization");
+            }
         }
     }
 }

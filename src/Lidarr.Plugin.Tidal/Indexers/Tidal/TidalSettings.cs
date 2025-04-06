@@ -7,6 +7,32 @@ using System;
 
 namespace NzbDrone.Core.Indexers.Tidal
 {
+    /// <summary>
+    /// Defines the search thoroughness level options
+    /// </summary>
+    public enum SearchThoroughness
+    {
+        /// <summary>
+        /// Efficient search - prioritize speed and minimizing API calls
+        /// </summary>
+        Efficient = 0,
+        
+        /// <summary>
+        /// Balanced search - default setting balancing thoroughness and efficiency
+        /// </summary>
+        Balanced = 1,
+        
+        /// <summary>
+        /// Thorough search - prioritize finding more results over efficiency
+        /// </summary>
+        Thorough = 2,
+        
+        /// <summary>
+        /// Completionist mode - exhaustive search with little regard for efficiency
+        /// </summary>
+        Completionist = 3
+    }
+
     public class TidalIndexerSettingsValidator : AbstractValidator<TidalIndexerSettings>
     {
         public TidalIndexerSettingsValidator()
@@ -92,6 +118,15 @@ namespace NzbDrone.Core.Indexers.Tidal
 
         [FieldDefinition(8, Label = "Preferred Country Code", Type = FieldType.Textbox, HelpText = "Two-letter country code to use for API requests (e.g. US, GB, DE)", Advanced = true)]
         public string PreferredCountryCode { get; set; } = "US";
+
+        [FieldDefinition(9, Label = "Smart Pagination", HelpText = "Automatically determine how many search pages to retrieve based on search context", Type = FieldType.Checkbox, Advanced = true)]
+        public bool EnableSmartPagination { get; set; } = true;
+
+        [FieldDefinition(10, Label = "Max Search Pages", HelpText = "Maximum number of pages to retrieve, even with smart pagination", Type = FieldType.Number, Advanced = true)]
+        public int MaxSearchPages { get; set; } = 10;
+
+        [FieldDefinition(11, Label = "Search Thoroughness", HelpText = "How thorough searches should be", Type = FieldType.Select, SelectOptions = typeof(SearchThoroughness), Advanced = true)]
+        public int SearchThoroughness { get; set; } = 1; // Balanced
 
         // this is hardcoded so this doesn't need to exist except that it's required by the interface
         public string BaseUrl { get; set; } = "";

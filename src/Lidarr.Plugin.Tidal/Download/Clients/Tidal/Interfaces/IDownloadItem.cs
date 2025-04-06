@@ -118,6 +118,12 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Interfaces
         string LastErrorMessage { get; set; }
 
         /// <summary>
+        /// Gets or sets the priority of the download in the queue.
+        /// Higher priority items are processed before lower priority ones.
+        /// </summary>
+        DownloadItemPriority Priority { get; set; }
+
+        /// <summary>
         /// Gets or sets the folder where the download will be saved.
         /// </summary>
         string DownloadFolder { get; set; }

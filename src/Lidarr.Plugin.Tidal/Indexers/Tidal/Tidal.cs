@@ -90,7 +90,7 @@ namespace NzbDrone.Core.Indexers.Tidal
             {
                 // Log the ConfigPath to verify it's correct
                 _logger.Debug($"Initializing TidalAPI with config path: {Settings?.ConfigPath ?? "null"}");
-                
+
                 if (Settings == null)
                 {
                     _logger.Error("Settings is null during initialization");
@@ -100,7 +100,7 @@ namespace NzbDrone.Core.Indexers.Tidal
                         Logger = _logger
                     };
                 }
-                
+
                 if (!string.IsNullOrWhiteSpace(Settings.ConfigPath) && !Directory.Exists(Settings.ConfigPath))
                 {
                     _logger.Warn($"Config directory doesn't exist: {Settings.ConfigPath}. Attempting to create it.");
@@ -114,7 +114,7 @@ namespace NzbDrone.Core.Indexers.Tidal
                         // Continue with initialization - TidalAPI.Initialize will use a temporary directory
                     }
                 }
-                
+
                 // Create a safe request generator regardless of whether initialization succeeds
                 var requestGenerator = new TidalRequestGenerator(_rateLimitService)
                 {
@@ -124,19 +124,19 @@ namespace NzbDrone.Core.Indexers.Tidal
 
                 // Initialize the API with proper null checks
                 TidalAPI.Initialize(Settings.ConfigPath, _httpClient, _logger, _countryManagerService);
-                
+
                 if (TidalAPI.Instance == null)
                 {
                     _logger.Error("TidalAPI.Instance is null after initialization");
                     return requestGenerator;
                 }
-                
+
                 if (TidalAPI.Instance.Client == null)
                 {
                     _logger.Error("TidalAPI.Instance.Client is null after initialization");
                     return requestGenerator;
                 }
-                
+
                 // Set the country code based on settings - with additional null checks
                 if (_countryManagerService != null)
                 {
@@ -148,7 +148,7 @@ namespace NzbDrone.Core.Indexers.Tidal
                             Country = (int)NzbDrone.Core.Download.Clients.Tidal.TidalCountry.Canada, // Default
                             CustomCountryCode = "" // Default
                         };
-                        
+
                         // Update the country code manager
                         _countryManagerService.UpdateCountryCode(downloadSettings);
                         _logger.Debug($"Updated country code to {_countryManagerService.GetCountryCode()} in Tidal indexer");
@@ -158,7 +158,7 @@ namespace NzbDrone.Core.Indexers.Tidal
                         _logger.Error(countryEx, "Error updating country code in CountryManagerService");
                     }
                 }
-                
+
                 try
                 {
                     // Check if we need to perform login
@@ -171,20 +171,20 @@ namespace NzbDrone.Core.Indexers.Tidal
                         _logger.Info("No active user found or access token is missing - attempting login");
                         // Attempt login with timeout protection
                         var loginTask = TidalAPI.Instance.Client.Login(Settings.RedirectUrl);
-                        
+
                         if (!loginTask.Wait(TimeSpan.FromSeconds(30)))
                         {
                             _logger.Error("Login timed out after 30 seconds");
                             throw new TimeoutException("Login timed out after 30 seconds");
                         }
-                        
+
                         // Check login result
                         if (!loginTask.Result)
                         {
                             _logger.Error("Login failed");
                             throw new Exception("Login failed - check your redirect URL");
                         }
-                        
+
                         _logger.Info("Login successful - regenerating PKCE codes");
                         // The URL was submitted to the API so it likely cannot be reused
                         TidalAPI.Instance.Client.RegeneratePkceCodes();
@@ -199,19 +199,19 @@ namespace NzbDrone.Core.Indexers.Tidal
                     _logger.Error(loginEx, "Error during Tidal login");
                     // Continue - we'll still return the request generator
                 }
-                
+
                 return requestGenerator;
             }
             catch (Exception ex)
             {
                 _logger.Error(ex, "Error initializing Tidal");
-                
+
                 // Try to provide more context about the error
                 if (ex.InnerException != null)
                 {
                     _logger.Error(ex.InnerException, "Inner exception details");
                 }
-                
+
                 // Return a basic request generator that won't try to use TidalAPI.Instance
                 // which might be in an inconsistent state
                 return new TidalRequestGenerator(_rateLimitService)
@@ -239,46 +239,46 @@ namespace NzbDrone.Core.Indexers.Tidal
             {
                 // Initialize Tidal API
                 TidalAPI.Initialize(Settings.ConfigPath, _httpClient, _logger);
-                
+
                 if (TidalAPI.Instance == null || TidalAPI.Instance.Client == null)
                 {
                     return new ValidationFailure("Connection", "Failed to initialize Tidal API client");
                 }
-                
+
                 // Attempt to login
                 if (!string.IsNullOrEmpty(Settings.RedirectUrl))
                 {
                     _logger.Debug("Testing connection with redirect URL");
-                    
+
                     // Check URL format
                     var originalUrl = Settings.RedirectUrl;
                     if (!originalUrl.StartsWith("http://") && !originalUrl.StartsWith("https://"))
                     {
                         _logger.Warn("Redirect URL seems malformed (missing http:// or https://)");
                     }
-                    
+
                     if (!originalUrl.Contains("code="))
                     {
                         _logger.Warn("Redirect URL is missing 'code=' parameter needed for authentication");
                         return new ValidationFailure("RedirectUrl", "The redirect URL appears to be invalid - it must be the full URL from your browser after login, containing a 'code=' parameter");
                     }
-                    
+
                     // Check if we need to perform login
                     var loginTask = TidalAPI.Instance.Client.Login(Settings.RedirectUrl);
-                    
+
                     if (!loginTask.Wait(TimeSpan.FromSeconds(30)))
                     {
                         _logger.Error("Login timed out after 30 seconds");
                         throw new TimeoutException("Login timed out after 30 seconds");
                     }
-                    
+
                     // Check login result
                     var success = loginTask.Result;
                     if (!success)
                     {
                         return new ValidationFailure(string.Empty, "Failed to login to Tidal. Please check your redirect URL.");
                     }
-                    
+
                     _logger.Info("Successfully logged in to Tidal");
                 }
                 else
@@ -293,10 +293,10 @@ namespace NzbDrone.Core.Indexers.Tidal
                     {
                         _logger.Warn(ex, "Error checking login status");
                     }
-                    
+
                     if (!isLoggedIn)
                     {
-                        return new ValidationFailure("RedirectUrl", 
+                        return new ValidationFailure("RedirectUrl",
                             "Not logged in to Tidal. To authenticate:\n" +
                             "1. Copy the login URL from the settings\n" +
                             "2. Open it in your browser and log in to Tidal\n" +
@@ -304,7 +304,7 @@ namespace NzbDrone.Core.Indexers.Tidal
                             "4. Paste that complete URL into the 'Redirect URL' field here");
                     }
                 }
-                
+
                 // Try a simple search to verify search functionality
                 try
                 {
@@ -318,17 +318,17 @@ namespace NzbDrone.Core.Indexers.Tidal
 
                     // Execute the request to verify connectivity
                     var response = await FetchPageResponse(firstRequest, CancellationToken.None);
-                    
+
                     if (response == null || response.HttpResponse == null)
                     {
                         return new ValidationFailure(string.Empty, "Received null response from Tidal API.");
                     }
-                    
+
                     if (response.HttpResponse.HasHttpError)
                     {
                         return new ValidationFailure(string.Empty, $"Tidal API returned error: {response.HttpResponse.StatusCode}");
                     }
-                    
+
                     _logger.Info("Test search request completed successfully");
                 }
                 catch (Exception searchEx)
@@ -362,8 +362,14 @@ namespace NzbDrone.Core.Indexers.Tidal
                     // Clear any pending requests from previous runs
                     // CRITICAL FIX: This prevents stale search requests from blocking new searches
                     ClearSearchQueue();
-                    
-                    _searchProcessorTask = Task.Run(ProcessSearchQueue);
+
+                    // Create multiple worker tasks to process the search queue in parallel
+                    // Use the MaxConcurrentSearches setting to determine how many worker tasks to create
+                    int workerCount = Settings?.MaxConcurrentSearches ?? 5;
+                    _logger.Info($"Starting {workerCount} search queue processor workers");
+
+                    // Start a single task that will manage multiple worker tasks
+                    _searchProcessorTask = Task.Run(() => ProcessSearchQueueWithWorkers(workerCount));
                     _processorStarted = true;
                     _logger.Debug("Search queue processor started");
                 }
@@ -376,7 +382,7 @@ namespace NzbDrone.Core.Indexers.Tidal
             try
             {
                 _queueLock.Wait();
-                
+
                 _logger.Debug("Clearing search queue");
                 // Drain the queue
                 while (_searchQueue.TryDequeue(out var pendingRequest))
@@ -390,7 +396,7 @@ namespace NzbDrone.Core.Indexers.Tidal
                     {
                         _logger.Debug(ex, "Error completing abandoned search request");
                     }
-                    
+
                     // Dispose any cancellation token sources
                     try
                     {
@@ -401,7 +407,7 @@ namespace NzbDrone.Core.Indexers.Tidal
                         _logger.Debug(ex, "Error disposing token source for abandoned search request");
                     }
                 }
-                
+
                 // Reset semaphore to 0
                 while (_queueSemaphore.CurrentCount > 0)
                 {
@@ -418,17 +424,55 @@ namespace NzbDrone.Core.Indexers.Tidal
             }
         }
 
-        // CRITICAL FIX: Modified search queue processor
-        private async Task ProcessSearchQueue()
+        // CRITICAL FIX: New method to process search queue with multiple workers
+        private async Task ProcessSearchQueueWithWorkers(int workerCount)
         {
-            _logger.Debug("Search queue processor started");
-            
+            _logger.Info($"Search queue processor manager started with {workerCount} workers");
+
+            // Create a list to hold all worker tasks
+            var workers = new List<Task>();
+
+            try
+            {
+                // Start the specified number of worker tasks
+                for (int i = 0; i < workerCount; i++)
+                {
+                    int workerId = i + 1;
+                    workers.Add(Task.Run(() => ProcessSearchQueue(workerId)));
+                }
+
+                // Wait for all workers to complete
+                await Task.WhenAll(workers);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error in search queue processor manager");
+            }
+            finally
+            {
+                lock (_processorLock)
+                {
+                    _processorStarted = false;
+                }
+
+                _logger.Debug("Search queue processor manager stopped");
+
+                // Clean up any remaining requests
+                ClearSearchQueue();
+            }
+        }
+
+        // CRITICAL FIX: Modified search queue processor
+        private async Task ProcessSearchQueue(int workerId = 0)
+        {
+            _logger.Info($"Search queue processor worker {workerId} started with MaxConcurrentSearches={Settings?.MaxConcurrentSearches ?? 5}");
+
             try
             {
                 while (!_processorCts.IsCancellationRequested)
                 {
                     SearchRequest request = null;
-                    
+
                     try
                     {
                         // Wait for an item to be available in the queue
@@ -436,10 +480,10 @@ namespace NzbDrone.Core.Indexers.Tidal
                         {
                             continue;
                         }
-                        
+
                         // Acquire lock before dequeuing
                         await _queueLock.WaitAsync(_processorCts.Token);
-                        
+
                         try
                         {
                             // Try to get the next request from the queue
@@ -454,7 +498,7 @@ namespace NzbDrone.Core.Indexers.Tidal
                         {
                             _queueLock.Release();
                         }
-                        
+
                         // Check if the request is already timed out or canceled
                         if (request.TokenSource.IsCancellationRequested)
                         {
@@ -462,7 +506,7 @@ namespace NzbDrone.Core.Indexers.Tidal
                             request.CompletionSource.TrySetCanceled();
                             continue;
                         }
-                        
+
                         // Check if request is too old (more than timeout threshold)
                         if ((DateTime.UtcNow - request.RequestTime).TotalMilliseconds > _searchQueueItemTimeout.TotalMilliseconds)
                         {
@@ -470,24 +514,29 @@ namespace NzbDrone.Core.Indexers.Tidal
                             request.CompletionSource.TrySetResult(Array.Empty<ReleaseInfo>());
                             continue;
                         }
-                        
-                        _logger.Info($"🎵 Beginning Tidal search for '{request.SearchTerm}'");
-                        
+
+                        // Get current concurrency information from rate limit service
+                        int startActiveSearches = _rateLimitService?.CurrentRequestCount ?? 0;
+                        int startMaxConcurrentSearches = Settings?.MaxConcurrentSearches ?? 5;
+                        int startAvailableSlots = _rateLimitService?.CurrentCount ?? 0;
+
+                        _logger.Info($"🎵 Worker {workerId}: Beginning Tidal search for '{request.SearchTerm}' (active searches: {startActiveSearches}/{startMaxConcurrentSearches}, available slots: {startAvailableSlots})");
+
                         // Use a timeout for the actual search operation
                         using var searchTimeoutCts = new CancellationTokenSource(_searchQueueItemTimeout);
                         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
                             request.TokenSource.Token, searchTimeoutCts.Token);
-                        
+
                         try
                         {
                             // Perform the actual search
                             var results = await FetchReleasesFromIndexer(request.SearchTerm, linkedCts.Token);
-                            
+
                             // CRITICAL FIX: Add a small delay after completing the search operation
                             // This ensures state is properly settled before processing another search
                             await Task.Delay(100, CancellationToken.None);
-                            
-                            // Complete the task with the results 
+
+                            // Complete the task with the results
                             // Try multiple times with exponential backoff in case of task completion contention
                             bool taskCompleted = false;
                             int attempts = 0;
@@ -501,17 +550,22 @@ namespace NzbDrone.Core.Indexers.Tidal
                                     await Task.Delay(100 * attempts, CancellationToken.None);
                                 }
                             }
-                            
+
                             if (taskCompleted)
                             {
-                                _logger.Info($"✅ Generated {results.Count} total release results from Tidal search");
+                                // Get updated concurrency information after search
+                                int endActiveSearches = _rateLimitService?.CurrentRequestCount ?? 0;
+                                int endMaxConcurrentSearches = Settings?.MaxConcurrentSearches ?? 5;
+                                int endAvailableSlots = _rateLimitService?.CurrentCount ?? 0;
+
+                                _logger.Info($"✅ Worker {workerId}: Generated {results.Count} total release results from Tidal search for '{request.SearchTerm}' (active searches: {endActiveSearches}/{endMaxConcurrentSearches}, available slots: {endAvailableSlots})");
                             }
                             else
                             {
                                 _logger.Error($"Failed to complete search task for '{request.SearchTerm}' after 3 attempts");
                             }
-                            
-                            // CRITICAL FIX: Add a small delay after setting the result to allow 
+
+                            // CRITICAL FIX: Add a small delay after setting the result to allow
                             // the task scheduler to process the completion callback
                             await Task.Delay(100, CancellationToken.None);
                         }
@@ -539,13 +593,13 @@ namespace NzbDrone.Core.Indexers.Tidal
                     catch (Exception ex)
                     {
                         _logger.Error(ex, "Unhandled exception in search queue processor");
-                        
+
                         // Complete the current request if it failed
                         if (request?.CompletionSource != null && !request.CompletionSource.Task.IsCompleted)
                         {
                             request.CompletionSource.TrySetException(ex);
                         }
-                        
+
                         // Delay before continuing to avoid tight loop on persistent errors
                         await Task.Delay(1000, _processorCts.Token);
                     }
@@ -567,15 +621,7 @@ namespace NzbDrone.Core.Indexers.Tidal
             }
             finally
             {
-                lock (_processorLock)
-                {
-                    _processorStarted = false;
-                }
-                
-                _logger.Debug("Search queue processor stopped");
-                
-                // Clean up any remaining requests
-                ClearSearchQueue();
+                _logger.Debug($"Search queue processor worker {workerId} stopped");
             }
         }
 
@@ -583,14 +629,14 @@ namespace NzbDrone.Core.Indexers.Tidal
         private async Task<IList<ReleaseInfo>> FetchReleasesFromIndexer(string searchTerm, CancellationToken cancellationToken)
         {
             _logger.Debug($"Performing search for: {searchTerm}");
-            
+
             try
             {
                 // Verify TidalAPI is initialized first
                 if (TidalAPI.Instance == null)
                 {
                     _logger.Error("TidalAPI is not initialized, attempting re-initialization");
-                    
+
                     // Try to re-initialize with proper error handling
                     try
                     {
@@ -600,7 +646,7 @@ namespace NzbDrone.Core.Indexers.Tidal
                             _logger.Error("Cannot initialize TidalAPI: ConfigPath is empty");
                             return new List<ReleaseInfo>();
                         }
-                        
+
                         // Create config directory if it doesn't exist
                         if (!Directory.Exists(Settings.ConfigPath))
                         {
@@ -615,16 +661,16 @@ namespace NzbDrone.Core.Indexers.Tidal
                                 return new List<ReleaseInfo>();
                             }
                         }
-                        
+
                         TidalAPI.Initialize(Settings.ConfigPath, _httpClient, _logger);
-                        
+
                         // Still null? Give up
                         if (TidalAPI.Instance == null)
                         {
                             _logger.Error("Unable to initialize TidalAPI, search cannot proceed");
                             return new List<ReleaseInfo>(); // Return empty list
                         }
-                        
+
                         // Check if we need to login
                         if (TidalAPI.Instance.Client?.ActiveUser == null && !string.IsNullOrEmpty(Settings.RedirectUrl))
                         {
@@ -632,7 +678,7 @@ namespace NzbDrone.Core.Indexers.Tidal
                             try
                             {
                                 var loginTask = TidalAPI.Instance.Client.Login(Settings.RedirectUrl);
-                                
+
                                 // Wait for either the login task to complete or a timeout
                                 var completedTask = await Task.WhenAny(loginTask, Task.Delay(30000, cancellationToken));
                                 if (completedTask != loginTask)
@@ -640,13 +686,13 @@ namespace NzbDrone.Core.Indexers.Tidal
                                     _logger.Error("Login timed out after 30 seconds");
                                     return new List<ReleaseInfo>();
                                 }
-                                
+
                                 if (!loginTask.Result)
                                 {
                                     _logger.Error("Login failed with redirect URL");
                                     return new List<ReleaseInfo>();
                                 }
-                                
+
                                 _logger.Info("Successfully logged in with redirect URL");
                             }
                             catch (Exception ex)
@@ -666,48 +712,48 @@ namespace NzbDrone.Core.Indexers.Tidal
                         return new List<ReleaseInfo>(); // Return empty list
                     }
                 }
-                
+
                 // Double-check that Client is initialized
                 if (TidalAPI.Instance == null || TidalAPI.Instance.Client == null)
                 {
                     _logger.Error("TidalAPI or TidalAPI.Client is still null after initialization");
                     return new List<ReleaseInfo>();
                 }
-                
+
                 // Check if we're actually logged in
-                if (TidalAPI.Instance.Client.ActiveUser == null || 
+                if (TidalAPI.Instance.Client.ActiveUser == null ||
                     string.IsNullOrEmpty(TidalAPI.Instance.Client.ActiveUser.AccessToken))
                 {
                     _logger.Error("Not properly logged in to Tidal (missing ActiveUser or AccessToken)");
                     return new List<ReleaseInfo>();
                 }
-                
+
                 // Check circuit breaker status before initiating search
                 bool circuitBreakerOpen = _tidalProxy.IsCircuitBreakerOpen();
                 if (circuitBreakerOpen)
                 {
                     var pendingCount = _tidalProxy.GetPendingDownloadCount();
                     var timeRemaining = _tidalProxy.GetCircuitBreakerReopenTime();
-                    
+
                     // For user experience, add a small delay when circuit breaker is open
                     // This helps avoid database contention when many searches are happening
                     await Task.Delay(500, cancellationToken);
-                    
+
                     var message = $"Circuit breaker is currently open - download operations limited for {timeRemaining.TotalMinutes:F1} more minutes";
-                    
+
                     if (pendingCount > 0)
                     {
                         message += $". {pendingCount} downloads are queued for processing once circuit breaker reopens.";
                     }
-                    
+
                     _logger.Warn(message);
-                    
+
                     // If there are too many pending downloads already queued (15+), return limited results
                     // to avoid overwhelming the system with more search results that will just get queued
                     if (pendingCount > 15)
                     {
                         _logger.Warn($"Large number of pending downloads ({pendingCount}). Limiting search results to reduce system load.");
-                        
+
                         // Return a single informational "release" to let the user know what's happening
                         var limitedRelease = new ReleaseInfo
                         {
@@ -718,23 +764,23 @@ namespace NzbDrone.Core.Indexers.Tidal
                             InfoUrl = string.Empty,
                             Guid = $"circuit_breaker_limit_{Guid.NewGuid()}"
                         };
-                        
+
                         return new List<ReleaseInfo> { limitedRelease };
                     }
                 }
-                
+
                 // Create a basic album search criteria - just enough for the request generator to work
-                var searchCriteria = new AlbumSearchCriteria 
+                var searchCriteria = new AlbumSearchCriteria
                 {
                     Artist = new NzbDrone.Core.Music.Artist { Name = searchTerm }
                 };
-                
+
                 // Use the appropriate method to perform the search
                 var generator = GetRequestGenerator();
                 var parser = GetParser();
-                
+
                 var releases = new List<ReleaseInfo>();
-                
+
                 // Generate requests based on search criteria
                 try
                 {
@@ -746,7 +792,7 @@ namespace NzbDrone.Core.Indexers.Tidal
                             try
                             {
                                 var pageReleases = await FetchPage(request, parser, cancellationToken);
-                                
+
                                 // Modify release titles to indicate download limitations if circuit breaker is open
                                 if (circuitBreakerOpen)
                                 {
@@ -777,7 +823,7 @@ namespace NzbDrone.Core.Indexers.Tidal
                     _logger.Error(ex, $"Error generating search requests for '{searchTerm}': {ex.Message}");
                     // Return whatever releases we've collected so far
                 }
-                
+
                 return releases;
             }
             catch (Exception ex)
@@ -809,24 +855,24 @@ namespace NzbDrone.Core.Indexers.Tidal
             try
             {
                 EnsureQueueProcessorStarted();
-                
+
                 // Extract the search term from the criteria
                 var searchTerm = string.Empty;
                 if (searchCriteria.Artist != null && !string.IsNullOrEmpty(searchCriteria.Artist.Name))
                 {
                     searchTerm = searchCriteria.Artist.Name;
-                    
+
                     // Add album info if available
                     if (searchCriteria.Albums != null && searchCriteria.Albums.Count > 0 && !string.IsNullOrEmpty(searchCriteria.Albums[0].Title))
                     {
                         searchTerm += " " + searchCriteria.Albums[0].Title;
                     }
                 }
-                
+
                 // Don't use 'using' here as the CTS needs to live as long as the request is in the queue
                 var cts = new CancellationTokenSource(_searchTimeout);
                 var tcs = new TaskCompletionSource<IList<ReleaseInfo>>();
-                
+
                 // Enqueue the search request
                 var request = new SearchRequest
                 {
@@ -835,10 +881,10 @@ namespace NzbDrone.Core.Indexers.Tidal
                     TokenSource = cts,
                     RequestTime = DateTime.UtcNow
                 };
-                
+
                 _searchQueue.Enqueue(request);
                 _queueSemaphore.Release();
-                
+
                 return tcs.Task;
             }
             catch (Exception ex)
@@ -858,18 +904,18 @@ namespace NzbDrone.Core.Indexers.Tidal
             try
             {
                 EnsureQueueProcessorStarted();
-                
+
                 // Extract the search term from the criteria
                 var searchTerm = string.Empty;
                 if (searchCriteria.Artist != null && !string.IsNullOrEmpty(searchCriteria.Artist.Name))
                 {
                     searchTerm = searchCriteria.Artist.Name;
                 }
-                
+
                 // Don't use 'using' here as the CTS needs to live as long as the request is in the queue
                 var cts = new CancellationTokenSource(_searchTimeout);
                 var tcs = new TaskCompletionSource<IList<ReleaseInfo>>();
-                
+
                 // Enqueue the search request
                 var request = new SearchRequest
                 {
@@ -878,10 +924,10 @@ namespace NzbDrone.Core.Indexers.Tidal
                     TokenSource = cts,
                     RequestTime = DateTime.UtcNow
                 };
-                
+
                 _searchQueue.Enqueue(request);
                 _queueSemaphore.Release();
-                
+
                 return tcs.Task;
             }
             catch (Exception ex)
@@ -903,12 +949,12 @@ namespace NzbDrone.Core.Indexers.Tidal
         private async Task<IndexerResponse> FetchPageResponse(IndexerRequest request, CancellationToken cancellationToken)
         {
             _logger.Debug($"Fetching page: {request.Url}");
-            
+
             try
             {
                 // Configure the cancellation token in the request
                 request.HttpRequest.RequestTimeout = TimeSpan.FromMinutes(2);
-                
+
                 // Use the base method to fetch the response
                 var response = await FetchIndexerResponse(request);
                 return response;
@@ -916,21 +962,21 @@ namespace NzbDrone.Core.Indexers.Tidal
             catch (HttpException httpEx) when (httpEx.Response.StatusCode == HttpStatusCode.Unauthorized)
             {
                 _logger.Warn("Unauthorized response from Tidal API - trying to refresh token");
-                
+
                 // Try to refresh token and retry once
                 try
                 {
                     if (TidalAPI.Instance?.Client?.ActiveUser != null)
                     {
                         await TidalAPI.Instance.Client.ForceRefreshToken();
-                        
+
                     }
                 }
                 catch (Exception retryEx)
                 {
                     _logger.Error(retryEx, "Error refreshing token for retry: {0}", retryEx.Message);
                 }
-                
+
                 // If we get here, the retry failed or wasn't attempted
                 _logger.Error("Authentication failed - token refresh unsuccessful");
                 throw httpEx; // Just rethrow the original exception
@@ -953,7 +999,7 @@ namespace NzbDrone.Core.Indexers.Tidal
             catch (Exception ex)
             {
                 _logger.Error(ex, $"Error parsing page {request.Url}: {ex.Message}");
-                
+
                 // Return an empty list instead of throwing to make error handling more graceful
                 return new List<ReleaseInfo>();
             }
@@ -969,7 +1015,7 @@ namespace NzbDrone.Core.Indexers.Tidal
                     var failure = new ValidationFailure("Connection", "Tidal API is not initialized");
                     return new ValidationResult(new[] { failure });
                 }
-                
+
                 // Check login state - use the IsLoggedIn property or method
                 bool isLoggedIn = false;
                 try {
@@ -978,13 +1024,13 @@ namespace NzbDrone.Core.Indexers.Tidal
                     // Fall back to checking if we have a valid access token
                     isLoggedIn = !string.IsNullOrEmpty(TidalAPI.Instance.Client.ActiveUser?.AccessToken);
                 }
-                
+
                 if (!isLoggedIn)
                 {
                     var failure = new ValidationFailure("Auth", "Not logged in to Tidal");
                     return new ValidationResult(new[] { failure });
                 }
-                
+
                 return new ValidationResult();
             }
             catch (Exception ex)
@@ -994,7 +1040,7 @@ namespace NzbDrone.Core.Indexers.Tidal
                 return new ValidationResult(new[] { failure });
             }
         }
-        
+
         /// <summary>
         /// Gets country code from the settings, using the CountryManagerService
         /// </summary>
@@ -1008,10 +1054,10 @@ namespace NzbDrone.Core.Indexers.Tidal
                     _logger.Warn("CountryManagerService is not available, using default country code US");
                     return "US";
                 }
-                
+
                 var settings = Settings;
                 _countryManagerService.UpdateCountryCode(settings);
-                
+
                 return _countryManagerService.GetCountryCode();
             }
             catch (Exception ex)
@@ -1052,10 +1098,10 @@ namespace NzbDrone.Core.Indexers.Tidal
 
         // Override the base FetchIndexerResponse method
         protected override async Task<IndexerResponse> FetchIndexerResponse(IndexerRequest request)
-        {            
+        {
             int retryCount = 0;
             const int MAX_RETRIES = 2;
-            
+
             while (retryCount <= MAX_RETRIES)
             {
                 try
@@ -1067,17 +1113,17 @@ namespace NzbDrone.Core.Indexers.Tidal
                         // If we got a valid result, return it
                         return result;
                     }
-                    
+
                     _logger.Warn("Null result returned from API, retrying...");
                 }
                 catch (HttpException ex)
                 {
-                    if (ex.Response.StatusCode == HttpStatusCode.Unauthorized || 
+                    if (ex.Response.StatusCode == HttpStatusCode.Unauthorized ||
                         ex.Response.StatusCode == HttpStatusCode.Forbidden)
                     {
-                        _logger.Warn("Authentication error: {0}. Attempting to refresh token and retry. Attempt {1}/{2}", 
+                        _logger.Warn("Authentication error: {0}. Attempting to refresh token and retry. Attempt {1}/{2}",
                                      ex.Message, retryCount + 1, MAX_RETRIES + 1);
-                        
+
                         if (await TokenRefresh())
                         {
                             // If token refresh succeeded, retry with a new token
@@ -1090,7 +1136,7 @@ namespace NzbDrone.Core.Indexers.Tidal
                             throw new AuthenticationException("Failed to refresh Tidal API token");
                         }
                     }
-                    
+
                     // For other HTTP exceptions, log and re-throw
                     _logger.Error(ex, "HTTP error: {0}", ex.Message);
                     throw;
@@ -1105,10 +1151,10 @@ namespace NzbDrone.Core.Indexers.Tidal
                     _logger.Error(ex, "Unknown error: {0}", ex.Message);
                     throw;
                 }
-                
+
                 retryCount++;
             }
-            
+
             // If we exhausted all retries without success, return null (will be handled by caller)
             _logger.Warn("Maximum retries reached without success");
             return null;
@@ -1152,7 +1198,7 @@ namespace NzbDrone.Core.Indexers.Tidal
             {
                 if (string.IsNullOrEmpty(url))
                     return "[empty]";
-                
+
                 // Very basic sanitization, just to show format but hide specifics
                 if (url.StartsWith("https://"))
                 {
@@ -1160,7 +1206,7 @@ namespace NzbDrone.Core.Indexers.Tidal
                     var uri = new Uri(url);
                     return $"https://{uri.Host}/...?[contains {uri.Query.Split('&').Length} parameters]";
                 }
-                
+
                 // If it's not a URL, just indicate its length
                 return $"[non-https string, length: {url.Length}]";
             }
@@ -1175,7 +1221,7 @@ namespace NzbDrone.Core.Indexers.Tidal
         {
             if (string.IsNullOrEmpty(url))
                 return url;
-                
+
             try
             {
                 // Problem: URL is not HTTP/HTTPS
@@ -1188,19 +1234,19 @@ namespace NzbDrone.Core.Indexers.Tidal
                         return "https://" + url;
                     }
                 }
-                
+
                 // URL already starts with http(s)://, see if it needs other fixes
                 try
                 {
                     // Try to parse as URI to see if it's valid
                     var uri = new Uri(url);
-                    
+
                     // Check if the code parameter exists
                     if (!uri.Query.Contains("code="))
                     {
                         _logger.Warn("Redirect URL is missing required 'code=' parameter");
                     }
-                    
+
                     // URL seems parseable, return as is
                     return url;
                 }
@@ -1208,7 +1254,7 @@ namespace NzbDrone.Core.Indexers.Tidal
                 {
                     // URI parsing failed, may need additional fixes
                     _logger.Debug("Redirect URL parsing failed, URL may be malformed");
-                    
+
                     // Some other common issues - spaces in URL
                     if (url.Contains(" "))
                     {
@@ -1216,7 +1262,7 @@ namespace NzbDrone.Core.Indexers.Tidal
                         return url.Replace(" ", "%20");
                     }
                 }
-                
+
                 // Return original if no fixes applied
                 return url;
             }
@@ -1226,7 +1272,7 @@ namespace NzbDrone.Core.Indexers.Tidal
                 return url; // Return original on error
             }
         }
-        
+
         // When attempting login, try to fix the URL format and add diagnostic logging
         private async Task<bool> AttemptLoginWithUrlFixes()
         {
@@ -1235,34 +1281,34 @@ namespace NzbDrone.Core.Indexers.Tidal
                 _logger.Error("Cannot login: Redirect URL is empty");
                 return false;
             }
-            
+
             try
             {
                 _logger.Debug("Attempting login with redirect URL");
-                
+
                 // Try original URL first
                 var originalResult = await TidalAPI.Instance.Client.Login(Settings.RedirectUrl);
-                
+
                 if (originalResult)
                 {
                     _logger.Info("Login successful with original URL");
                     return true;
                 }
-                
+
                 // Try to fix URL format and retry
                 var fixedUrl = TryFixRedirectUrl(Settings.RedirectUrl);
                 if (fixedUrl != Settings.RedirectUrl)
                 {
                     _logger.Debug("Attempting login with fixed redirect URL");
                     var fixedResult = await TidalAPI.Instance.Client.Login(fixedUrl);
-                    
+
                     if (fixedResult)
                     {
                         _logger.Info("Login successful with fixed URL format");
                         return true;
                     }
                 }
-                
+
                 _logger.Error("Login failed with both original and fixed URL formats");
                 return false;
             }

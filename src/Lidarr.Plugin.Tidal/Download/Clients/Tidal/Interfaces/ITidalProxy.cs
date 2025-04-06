@@ -67,5 +67,11 @@ namespace NzbDrone.Core.Download.Clients.Tidal
         /// </summary>
         /// <returns>The time until the circuit breaker reopens</returns>
         TimeSpan GetCircuitBreakerReopenTime();
+        
+        /// <summary>
+        /// Updates the proxy with new settings
+        /// </summary>
+        /// <param name="settings">The updated Tidal settings</param>
+        void UpdateSettings(TidalSettings settings);
     }
 } 

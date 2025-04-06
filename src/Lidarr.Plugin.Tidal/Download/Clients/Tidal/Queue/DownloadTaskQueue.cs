@@ -79,6 +79,11 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
         /// Gets or sets the timestamp when the item was added to the queue.
         /// </summary>
         public DateTime QueuedTime { get; set; }
+        
+        /// <summary>
+        /// Gets or sets the priority of the download in the queue.
+        /// </summary>
+        public int Priority { get; set; } = 0; // Default to Normal priority (0)
     }
 
     /// <summary>
@@ -359,6 +364,12 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
         private readonly TimeSpan _statsLogInterval = TimeSpan.FromMinutes(15); // Log stats every 15 minutes
         private DateTime _lastRegularUpdateTime = DateTime.MinValue;
         private readonly TimeSpan _regularUpdateInterval = TimeSpan.FromMinutes(3); // Status update every 3 minutes
+
+        // Queue auto-save
+        private System.Timers.Timer _autoSaveTimer;
+        private readonly TimeSpan _autoSaveInterval = TimeSpan.FromMinutes(2); // Auto-save every 2 minutes
+        private DateTime _lastAutoSaveTime = DateTime.MinValue;
+        private readonly object _autoSaveLock = new object();
 
         // Download status manager for the viewer
         private DownloadStatusManager _statusManager;
@@ -763,13 +774,43 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                     string persistencePath = settings.ActualQueuePersistencePath;
                     if (!string.IsNullOrWhiteSpace(persistencePath))
                     {
-                        _persistenceManager = new QueuePersistenceManager(persistencePath, logger);
-                        _logger.Info($"Queue persistence manager initialized successfully");
+                        try
+                        {
+                            // Ensure the directory exists
+                            if (!Directory.Exists(persistencePath))
+                            {
+                                _logger.Info($"Creating queue persistence directory: {persistencePath}");
+                                Directory.CreateDirectory(persistencePath);
+                            }
+
+                            // Test if the directory is writable
+                            string testFilePath = Path.Combine(persistencePath, ".write_test");
+                            File.WriteAllText(testFilePath, "Test");
+                            File.Delete(testFilePath);
+
+                            _persistenceManager = new QueuePersistenceManager(persistencePath, logger);
+                            _logger.Info($"Queue persistence manager initialized successfully with path: {persistencePath}");
+                        }
+                        catch (UnauthorizedAccessException ex)
+                        {
+                            _logger.Error(ex, $"Permission denied when accessing queue persistence path: {persistencePath}");
+                            TryFallbackPersistencePath(settings, logger);
+                        }
+                        catch (IOException ex)
+                        {
+                            _logger.Error(ex, $"IO error when accessing queue persistence path: {persistencePath}");
+                            TryFallbackPersistencePath(settings, logger);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.Error(ex, $"Error initializing queue persistence manager with path: {persistencePath}");
+                            TryFallbackPersistencePath(settings, logger);
+                        }
                     }
                     else
                     {
-                        _logger.Warn("Queue persistence path is not configured. Queue persistence will be disabled.");
-                        _persistenceManager = null;
+                        _logger.Warn("Queue persistence path is not configured. Trying fallback paths...");
+                        TryFallbackPersistencePath(settings, logger);
                     }
                 }
                 catch (Exception ex)
@@ -797,6 +838,50 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
             if (_settings.EnableQueuePersistence)
             {
                 RestoreQueueFromDisk();
+            }
+            
+            // Initialize auto-save timer
+            if (_settings.EnableQueuePersistence && _persistenceManager != null)
+            {
+                _autoSaveTimer = new System.Timers.Timer
+                {
+                    Interval = _autoSaveInterval.TotalMilliseconds,
+                    AutoReset = true
+                };
+                _autoSaveTimer.Elapsed += (sender, args) => AutoSaveQueue();
+                _logger.Debug($"Auto-save timer initialized with interval of {_autoSaveInterval.TotalMinutes} minutes");
+            }
+        }
+
+        /// <summary>
+        /// Tries to create a persistence manager with a fallback path if the primary path fails
+        /// </summary>
+        private void TryFallbackPersistencePath(TidalSettings settings, Logger logger)
+        {
+            try
+            {
+                // Try using temp directory as fallback
+                string tempPath = Path.Combine(Path.GetTempPath(), "Lidarr", "TidalQueue");
+                _logger.Warn($"Trying fallback persistence path: {tempPath}");
+                
+                // Ensure the directory exists
+                if (!Directory.Exists(tempPath))
+                {
+                    Directory.CreateDirectory(tempPath);
+                }
+                
+                // Test if the directory is writable
+                string testFilePath = Path.Combine(tempPath, ".write_test");
+                File.WriteAllText(testFilePath, "Test");
+                File.Delete(testFilePath);
+                
+                _persistenceManager = new QueuePersistenceManager(tempPath, logger);
+                _logger.Info($"Queue persistence manager initialized with fallback path: {tempPath}");
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to initialize queue persistence manager with fallback path. Queue persistence will be disabled.");
+                _persistenceManager = null;
             }
         }
 
@@ -878,9 +963,88 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                 bool persistencePathChanged = oldSettings == null ||
                     oldSettings.ActualQueuePersistencePath != settings.ActualQueuePersistencePath;
 
-                if (settings.EnableQueuePersistence && persistencePathChanged && _collectionManager.Count > 0)
+                bool persistenceSettingChanged = oldSettings == null || 
+                    oldSettings.EnableQueuePersistence != settings.EnableQueuePersistence;
+
+                // If persistence setting was enabled or path changed while enabled, reinitialize
+                if ((persistenceSettingChanged && settings.EnableQueuePersistence) || 
+                    (settings.EnableQueuePersistence && persistencePathChanged))
                 {
-                    SaveQueueToDisk();
+                    try
+                    {
+                        _logger?.Info("Queue persistence settings changed. Reinitializing persistence manager...");
+                        
+                        // Save current items if we had a persistence manager before
+                        IDownloadItem[] currentItems = _collectionManager.GetAllItems();
+                        
+                        // Stop auto-save timer
+                        if (_autoSaveTimer != null)
+                        {
+                            _autoSaveTimer.Stop();
+                        }
+                        
+                        // Reinitialize persistence manager
+                        if (settings.EnableQueuePersistence)
+                        {
+                            string persistencePath = settings.ActualQueuePersistencePath;
+                            if (!string.IsNullOrWhiteSpace(persistencePath))
+                            {
+                                try
+                                {
+                                    // Ensure the directory exists
+                                    if (!Directory.Exists(persistencePath))
+                                    {
+                                        _logger.Info($"Creating queue persistence directory: {persistencePath}");
+                                        Directory.CreateDirectory(persistencePath);
+                                    }
+                                    
+                                    _persistenceManager = new QueuePersistenceManager(persistencePath, _logger);
+                                    _logger.Info($"Queue persistence manager reinitialized with path: {persistencePath}");
+                                    
+                                    // Initialize auto-save timer if needed
+                                    if (_autoSaveTimer == null)
+                                    {
+                                        _autoSaveTimer = new System.Timers.Timer
+                                        {
+                                            Interval = _autoSaveInterval.TotalMilliseconds,
+                                            AutoReset = true
+                                        };
+                                        _autoSaveTimer.Elapsed += (sender, args) => AutoSaveQueue();
+                                    }
+                                    
+                                    // Start the timer
+                                    _autoSaveTimer.Start();
+                                    _logger.Debug("Started queue auto-save timer after reinitializing persistence manager");
+                                    
+                                    // Save the current items to the new location
+                                    if (currentItems.Length > 0)
+                                    {
+                                        _persistenceManager.SaveQueue(currentItems);
+                                        _logger.Info($"Migrated {currentItems.Length} queue items to new persistence location");
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger.Error(ex, $"Error reinitializing queue persistence manager. Falling back to previous configuration.");
+                                    TryFallbackPersistencePath(settings, _logger);
+                                }
+                            }
+                            else
+                            {
+                                _logger.Warn("Queue persistence path is not configured after settings change. Trying fallback paths...");
+                                TryFallbackPersistencePath(settings, _logger);
+                            }
+                        }
+                        else
+                        {
+                            _persistenceManager = null;
+                            _logger.Info("Queue persistence disabled in updated settings.");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger?.Error(ex, "Error updating queue persistence settings");
+                    }
                 }
             }
         }
@@ -894,6 +1058,13 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                     _processingCancellationSource = new CancellationTokenSource();
                     _processingTask = Task.Run(() => BackgroundProcessing(_processingCancellationSource.Token));
                     _logger.Debug("Started queue handler task");
+                    
+                    // Start auto-save timer if enabled
+                    if (_settings.EnableQueuePersistence && _autoSaveTimer != null && _persistenceManager != null)
+                    {
+                        _autoSaveTimer.Start();
+                        _logger.Debug("Started queue auto-save timer");
+                    }
                 }
                 else
                 {
@@ -910,6 +1081,13 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
 
                 try
                 {
+                    // Stop auto-save timer
+                    if (_autoSaveTimer != null)
+                    {
+                        _autoSaveTimer.Stop();
+                        _logger.Debug("Stopped queue auto-save timer");
+                    }
+                    
                     // Save queue to disk before stopping if persistence is enabled
                     if (_settings.EnableQueuePersistence && _collectionManager.Count > 0)
                     {
@@ -1059,7 +1237,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                             {
                                 item = await _naturalScheduler.GetNextItem(linkedCts.Token);
                                 _logger?.Debug(item != null
-                                    ? $"[DIAGNOSTIC] Got item from scheduler: {item.Title} by {item.Artist}"
+                                    ? "[DIAGNOSTIC] Got item from scheduler: {item.Title} by {item.Artist}"
                                     : "[DIAGNOSTIC] No item returned from scheduler");
                             }
                             catch (OperationCanceledException)
@@ -1117,6 +1295,13 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                             // Reset error counters on success
                             consecutiveErrors = 0;
                             lastSuccessfulProcessing = DateTime.UtcNow;
+                            
+                            // Add a small delay between item processing to reduce contention with search operations
+                            // Only apply the delay if it's set to a positive value
+                            if (_settings.ItemProcessingDelayMs > 0)
+                            {
+                                await Task.Delay(TimeSpan.FromMilliseconds(_settings.ItemProcessingDelayMs), stoppingToken);
+                            }
                         }
                         catch (Exception ex)
                         {
@@ -1393,42 +1578,44 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
         /// </summary>
         private void LogEmptyQueueStatus()
         {
-            var sb = new StringBuilder();
-            sb.AppendLine($"{LogEmojis.Info} Queue Status at {DateTime.Now:HH:mm:ss}: Empty");
+            _logger.Info($"{LogEmojis.Status} ━━━━━━ QUEUE STATUS ━━━━━━");
+            _logger.Info($"{LogEmojis.Queue}  •  Status: Empty  •  Time: {DateTime.Now:HH:mm:ss}");
 
-            // Check if downloads are enabled (assuming TidalSettings has this property)
+            // Check if downloads are enabled
             if (_settings != null && _settings.GetType().GetProperty("Enable")?.GetValue(_settings) is bool enabled && !enabled)
             {
-                sb.AppendLine($"   {LogEmojis.Stop} Downloads are disabled in settings");
-                _logger.Info(sb.ToString());
+                _logger.Info($"{LogEmojis.Stop}  •  Downloads are disabled in settings");
+                _logger.Info($"{LogEmojis.Status} ━━━━━━━━━━━━━━━━━━━━━━━━━");
                 return;
             }
 
             // Check if we're within active hours
-            bool isActive = _naturalScheduler.ShouldProcessQueue(0); // If queue size 0 would process, we're in active hours
+            bool isActive = _naturalScheduler.ShouldProcessQueue(0);
             if (!isActive)
             {
-                sb.AppendLine($"   {LogEmojis.Schedule} Outside active hours");
-                sb.AppendLine($"   {LogEmojis.Wait} Downloads will resume during the next active period");
-                _logger.Info(sb.ToString());
+                _logger.Info($"{LogEmojis.Schedule}  •  Outside active hours");
+                _logger.Info($"{LogEmojis.Wait}  •  Downloads will resume during the next active period");
+                _logger.Info($"{LogEmojis.Status} ━━━━━━━━━━━━━━━━━━━━━━━━━");
                 return;
             }
 
             // Check if rate limited
             if (_stats.IsRateLimited && _settings.MaxDownloadsPerHour > 0)
             {
-                sb.AppendLine($"   {_stats.GetRateLimitStatusString()}");
-                sb.AppendLine($"   {LogEmojis.Time} Rate limit will reset in {_stats.GetTimeUntilRateLimitReset()}");
-
-                _logger.Info(sb.ToString());
+                string limitStatus = _stats.GetRateLimitStatusString().Replace($"{LogEmojis.Stop} ", "").Replace($"{LogEmojis.Warning} ", "");
+                _logger.Info($"{LogEmojis.Wait}  •  Rate limit active  •  {limitStatus}");
+                _logger.Info($"{LogEmojis.Time}  •  Reset in {_stats.GetTimeUntilRateLimitReset()}");
+                _logger.Info($"{LogEmojis.Status} ━━━━━━━━━━━━━━━━━━━━━━━━━");
                 return;
             }
 
             // If we get here, the queue is empty but the system is ready to download
-            sb.AppendLine($"   {LogEmojis.Success} System is ready to download - waiting for new items from Lidarr");
-            sb.AppendLine($"   {LogEmojis.Stats} Session stats: {_stats.TotalItemsProcessed} processed, {_stats.FailedDownloads} failed");
-
-            _logger.Info(sb.ToString());
+            _logger.Info($"{LogEmojis.Success}  •  System ready  •  Waiting for new items from Lidarr");
+            if (_stats.TotalItemsProcessed > 0)
+            {
+                _logger.Info($"{LogEmojis.Stats}  •  Session stats  •  {_stats.TotalItemsProcessed} processed  •  {_stats.FailedDownloads} failed");
+            }
+            _logger.Info($"{LogEmojis.Status} ━━━━━━━━━━━━━━━━━━━━━━━━━");
         }
 
         /// <summary>
@@ -1493,10 +1680,20 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                 return;
             }
 
-            const int maxRetryAttempts = 3;
+            const int maxRetryAttempts = 5; // Increased from 3 to 5
             int attempt = 0;
-            TimeSpan retryDelay = TimeSpan.FromMilliseconds(500);
+            TimeSpan initialRetryDelay = TimeSpan.FromMilliseconds(500);
+            TimeSpan retryDelay = initialRetryDelay;
             bool addedToQueue = false;
+            bool queueMightBeFull = false;
+
+            // Check queue capacity before attempting to add
+            var queueStats = GetQueueStats();
+            if (queueStats.CurrentCount >= queueStats.Capacity * 0.9)
+            {
+                _logger?.Warn($"{LogEmojis.Warning} Queue is nearly full ({queueStats.CurrentCount}/{queueStats.Capacity}). Download of '{workItem.Title}' by {workItem.Artist} may be delayed.");
+                queueMightBeFull = true;
+            }
 
             // Attempt to add to queue with retries
             while (attempt < maxRetryAttempts && !addedToQueue && !cancellationToken.IsCancellationRequested)
@@ -1510,19 +1707,23 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
 
                 try
                 {
-                    _logger?.Debug($"[DIAGNOSTIC] Attempting to add to queue (attempt {attempt})");
+                    if (attempt > 1)
+                    {
+                        _logger?.Debug($"{LogEmojis.Time} Retrying queue add (attempt {attempt}/{maxRetryAttempts}) for '{workItem.Title}' after {retryDelay.TotalMilliseconds}ms delay");
+                    }
+                    
                     // Use TryWrite instead of WriteAsync when available for better timeout control
                     bool immediateSuccess = _queue.Writer.TryWrite(workItem);
 
                     if (immediateSuccess)
                     {
-                        _logger.Debug($"[DIAGNOSTIC] Immediately added {workItem.Title} by {workItem.Artist} to queue");
+                        _logger.Debug($"{LogEmojis.Success} Immediately added '{workItem.Title}' by {workItem.Artist} to queue");
                         addedToQueue = true;
                     }
                     else
                     {
                         // If synchronous attempt failed, try asynchronous with timeout
-                        _logger.Debug($"[DIAGNOSTIC] Attempting async queue add for {workItem.Title} by {workItem.Artist}, attempt {attempt}/{maxRetryAttempts}");
+                        _logger.Debug($"{LogEmojis.Wait} Attempting async queue add for '{workItem.Title}', attempt {attempt}/{maxRetryAttempts}");
 
                         // Use a task with timeout to avoid potential hanging
                         var writeTask = _queue.Writer.WriteAsync(workItem, linkedCts.Token).AsTask();
@@ -1532,31 +1733,62 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                         {
                             await writeTask; // Propagate any exceptions
                             addedToQueue = true;
-                            _logger?.Debug($"[DIAGNOSTIC] Successfully added to queue via async call");
+                            _logger?.Debug($"{LogEmojis.Success} Successfully added to queue via async call");
                         }
                         else if (timeoutCts.IsCancellationRequested)
                         {
-                            throw new OperationCanceledException("Timed out while waiting for queue space", linkedCts.Token);
+                            if (queueMightBeFull)
+                            {
+                                throw new OperationCanceledException($"Timed out while waiting for queue space. Queue appears to be full ({queueStats.CurrentCount}/{queueStats.Capacity})", linkedCts.Token);
+                            }
+                            else
+                            {
+                                throw new OperationCanceledException("Timed out while waiting for queue space", linkedCts.Token);
+                            }
                         }
                     }
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException ex)
                 {
                     if (timeoutCts.IsCancellationRequested)
                     {
-                        _logger.Warn($"[DIAGNOSTIC] Timed out adding item to queue on attempt {attempt}/{maxRetryAttempts}: {workItem.Title} by {workItem.Artist}");
+                        if (queueMightBeFull)
+                        {
+                            _logger.Warn($"{LogEmojis.Warning} Queue appears to be full. Timed out adding '{workItem.Title}' to queue on attempt {attempt}/{maxRetryAttempts}");
+                            
+                            // Check if we've reached capacity limit and provide helpful message
+                            if (queueStats.CurrentCount >= queueStats.Capacity)
+                            {
+                                _logger.Error($"{LogEmojis.Error} Queue capacity reached ({queueStats.Capacity} items). Consider increasing Queue Capacity in settings.");
+                                
+                                if (attempt == maxRetryAttempts)
+                                {
+                                    throw new InvalidOperationException($"Queue capacity limit reached ({queueStats.Capacity}). Increase Queue Capacity in Tidal settings.", ex);
+                                }
+                            }
+                        }
+                        else
+                        {
+                            _logger.Warn($"{LogEmojis.Warning} Timed out adding item to queue on attempt {attempt}/{maxRetryAttempts}: '{workItem.Title}' by {workItem.Artist}");
+                        }
 
                         // Only retry if this is not the last attempt
                         if (attempt < maxRetryAttempts)
                         {
-                            _logger.Info($"[DIAGNOSTIC] Retrying queue add after a delay (attempt {attempt}/{maxRetryAttempts})");
+                            _logger.Info($"{LogEmojis.Retry} Retrying queue add after a delay (attempt {attempt}/{maxRetryAttempts})");
 
                             try
                             {
-                                // Wait before retrying
+                                // Wait before retrying with exponential backoff
                                 await Task.Delay(retryDelay, cancellationToken);
-                                // Increase delay for next retry (exponential backoff)
-                                retryDelay = TimeSpan.FromMilliseconds(retryDelay.TotalMilliseconds * 2);
+                                
+                                // Exponential backoff with jitter for next retry
+                                var jitter = new Random().Next(-200, 200); // Add randomness (-200ms to +200ms)
+                                retryDelay = TimeSpan.FromMilliseconds(
+                                    Math.Min(30000, initialRetryDelay.TotalMilliseconds * Math.Pow(2, attempt - 1) + jitter)
+                                );
+                                
+                                _logger.Debug($"{LogEmojis.Wait} Next retry in {retryDelay.TotalMilliseconds}ms");
                             }
                             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                             {
@@ -1596,7 +1828,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                 }
                 else if (currentCount == 1)
                 {
-                    _logger.Info($"{LogEmojis.Start} Download queue started with first item: {workItem.Title} by {workItem.Artist}");
+                    _logger.Info($"{LogEmojis.Start}  •  Queue started  •  First item: \"{workItem.Title}\"  •  Artist: {workItem.Artist}");
                 }
                 else if (currentCount % 100 == 0)
                 {
@@ -1612,9 +1844,20 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
             else if (!cancellationToken.IsCancellationRequested)
             {
                 // All attempts failed but not due to cancellation
-                _logger.Error($"[DIAGNOSTIC] Failed to add {workItem.Title} by {workItem.Artist} to queue after {maxRetryAttempts} attempts");
+                _logger.Error($"{LogEmojis.Error} Failed to add '{workItem.Title}' by {workItem.Artist} to queue after {maxRetryAttempts} attempts");
                 throw new InvalidOperationException($"Failed to add item to queue after {maxRetryAttempts} attempts");
             }
+        }
+
+        /// <summary>
+        /// Gets current queue statistics, including capacity and usage
+        /// </summary>
+        private (int Capacity, int CurrentCount) GetQueueStats()
+        {
+            // Get capacity from bounded channel options or from settings
+            var capacity = _settings?.QueueCapacity ?? 100;
+            var currentCount = _collectionManager.Count;
+            return (capacity, currentCount);
         }
 
         /// <summary>
@@ -1710,7 +1953,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                 // If the queue is empty, remove any saved queue file
                 if (_collectionManager.Count == 0)
                 {
-                    _logger.Info($"{LogEmojis.Success} Download queue is now empty");
+                    _logger.Info($"{LogEmojis.Success}  •  Queue completed  •  No more items in queue");
 
                     if (_settings.EnableQueuePersistence)
                     {
@@ -1719,7 +1962,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                         {
                             try
                             {
-                                var queueFilePath = Path.Combine(persistencePath, "queue_data.json");
+                                var queueFilePath = Path.Combine(persistencePath, "queue", "tidal_queue.json");
                                 if (File.Exists(queueFilePath))
                                 {
                                     File.Delete(queueFilePath);
@@ -1742,28 +1985,216 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
         }
 
         /// <summary>
-        /// Saves the current queue to disk.
+        /// Automatically saves the queue to disk on a timer.
         /// </summary>
-        private void SaveQueueToDisk()
+        private void AutoSaveQueue()
         {
-            if (!_settings.EnableQueuePersistence || _persistenceManager == null)
-            {
-                return;
-            }
-
             try
             {
-                // Get all items from the collection manager
-                var items = _collectionManager.GetAllItems();
+                if (_settings == null || !_settings.EnableQueuePersistence)
+                {
+                    return;
+                }
 
-                // Use the persistence manager to save the queue
-                _persistenceManager.SaveQueue(items);
-
-                _logger.Debug($"Saved {items.Length} items to queue file");
+                var now = DateTime.UtcNow;
+                
+                // Get current queue size for adaptive saving
+                int queueSize = _collectionManager.Count;
+                bool isHighVolumeMode = queueSize > (_settings.HighVolumeThreshold > 0 ? _settings.HighVolumeThreshold : 500);
+                
+                // Determine if we should save now based on time since last save and queue size
+                bool shouldSaveNow = false;
+                
+                if ((now - _lastAutoSaveTime).TotalMinutes >= 2) // Regular 2-minute interval
+                {
+                    shouldSaveNow = true;
+                    _logger?.Debug($"{LogEmojis.Save} Regular 2-minute queue persistence interval triggered");
+                }
+                else if (isHighVolumeMode && (now - _lastAutoSaveTime).TotalSeconds >= 30) // More frequent saves for high volume
+                {
+                    shouldSaveNow = true;
+                    _logger?.Debug($"{LogEmojis.Save} High-volume rapid persistence interval triggered ({queueSize} items in queue)");
+                }
+                
+                if (shouldSaveNow)
+                {
+                    _logger?.Debug("Auto-saving queue to disk...");
+                    SaveQueueToDisk();
+                    _lastAutoSaveTime = now;
+                }
             }
             catch (Exception ex)
             {
-                _logger.Error(ex, "Error saving queue to disk");
+                // Log but don't throw - we don't want auto-save failures to affect the queue operation
+                _logger?.Error(ex, $"{LogEmojis.Error} Error during queue auto-save: {ex.Message}");
+            }
+        }
+
+        private void SaveQueueToDisk()
+        {
+            if (_persistenceManager == null)
+            {
+                _logger?.Debug("Queue persistence manager is null - can't save queue");
+                return;
+            }
+
+            lock (_autoSaveLock)
+            {
+                try
+                {
+                    // Get a snapshot of queue items
+                    var items = _collectionManager.GetAllItems();
+                    
+                    // Don't save if queue is empty
+                    if (items.Length == 0)
+                    {
+                        _logger?.Debug("Queue is empty - nothing to save");
+                        return;
+                    }
+
+                    _logger?.Debug($"Saving queue to disk ({items.Length} items)...");
+                    
+                    bool success = false;
+                    Exception lastException = null;
+                    string queueFilePath = string.Empty;
+                    
+                    try
+                    {
+                        // Get the queue file path for backup purposes
+                        if (_settings?.ActualQueuePersistencePath != null)
+                        {
+                            queueFilePath = Path.Combine(_settings.ActualQueuePersistencePath, "queue", "tidal_queue.json");
+                            
+                            // Create backup of existing queue file if it exists
+                            if (File.Exists(queueFilePath))
+                            {
+                                string backupPath = queueFilePath + ".bak";
+                                try
+                                {
+                                    if (File.Exists(backupPath))
+                                    {
+                                        File.Delete(backupPath);
+                                    }
+                                    File.Copy(queueFilePath, backupPath);
+                                    _logger?.Debug($"Created backup of queue file at {backupPath}");
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger?.Warn($"Failed to create backup of queue file: {ex.Message}");
+                                    // Continue - this is just a backup failure, not critical
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger?.Warn($"Error preparing for queue save: {ex.Message}");
+                        // Continue with save attempt despite preparation error
+                    }
+                    
+                    // Try up to 3 times with exponential backoff
+                    for (int attempt = 1; attempt <= 3; attempt++)
+                    {
+                        try
+                        {
+                            // Save queue using persistence manager
+                            _persistenceManager.SaveQueue(items);
+                            
+                            // Verify file was written correctly
+                            if (!string.IsNullOrEmpty(queueFilePath) && File.Exists(queueFilePath))
+                            {
+                                var fileInfo = new FileInfo(queueFilePath);
+                                if (fileInfo.Length > 0)
+                                {
+                                    // Additional check: try to parse the JSON to verify it's valid
+                                    try
+                                    {
+                                        string json = File.ReadAllText(queueFilePath);
+                                        // If we can parse it as JSON, it's probably valid
+                                        if (!string.IsNullOrWhiteSpace(json) && 
+                                            (json.TrimStart().StartsWith("[") || json.TrimStart().StartsWith("{")))
+                                        {
+                                            success = true;
+                                            _logger?.Debug($"Queue file verified: {fileInfo.Length} bytes");
+                                            break;
+                                        }
+                                        else
+                                        {
+                                            _logger?.Warn("Queue file doesn't appear to contain valid JSON");
+                                        }
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        _logger?.Warn($"Error verifying queue file: {ex.Message}");
+                                        // Continue to retry
+                                    }
+                                }
+                                else
+                                {
+                                    _logger?.Warn("Queue file was created but is empty");
+                                }
+                            }
+                            else
+                            {
+                                // If we reach here and queueFilePath was set, it means the file wasn't created
+                                if (!string.IsNullOrEmpty(queueFilePath))
+                                {
+                                    _logger?.Warn("Queue file was not created at the expected location");
+                                }
+                                else
+                                {
+                                    // If queueFilePath wasn't available, assume success since we didn't get an exception
+                                    success = true;
+                                    break;
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            lastException = ex;
+                            _logger?.Warn(ex, $"{LogEmojis.Warning} Error saving queue to disk (attempt {attempt}/3): {ex.Message}");
+                            
+                            // Don't sleep on the last attempt
+                            if (attempt < 3)
+                            {
+                                Thread.Sleep(100 * attempt * attempt); // 100ms, 400ms, 900ms
+                            }
+                        }
+                    }
+                    
+                    if (success)
+                    {
+                        _logger?.Debug($"{LogEmojis.Success} Queue saved to disk successfully");
+                        _lastAutoSaveTime = DateTime.UtcNow; // Update save time even if auto-triggered
+                    }
+                    else if (lastException != null)
+                    {
+                        _logger?.Error(lastException, $"{LogEmojis.Error} Failed to save queue to disk after 3 attempts: {lastException.Message}");
+                        
+                        // Try to restore from backup if we failed to save
+                        if (!string.IsNullOrEmpty(queueFilePath))
+                        {
+                            string backupPath = queueFilePath + ".bak";
+                            if (File.Exists(backupPath))
+                            {
+                                try
+                                {
+                                    _logger?.Info($"Attempting to restore queue from backup after failed save");
+                                    File.Copy(backupPath, queueFilePath, true);
+                                    _logger?.Info($"Successfully restored queue from backup");
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger?.Error(ex, $"Failed to restore queue from backup: {ex.Message}");
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger?.Error(ex, $"{LogEmojis.Error} Error saving queue to disk: {ex.Message}");
+                }
             }
         }
 
@@ -1808,7 +2239,8 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                             Explicit = record.Explicit,
                             RemoteAlbumJson = record.RemoteAlbumJson,
                             QueuedTime = record.QueuedTime,
-                            Status = NzbDrone.Core.Download.Clients.Tidal.Interfaces.DownloadItemStatus.Queued
+                            Status = NzbDrone.Core.Download.Clients.Tidal.Interfaces.DownloadItemStatus.Queued,
+                            Priority = (NzbDrone.Core.Download.Clients.Tidal.Interfaces.DownloadItemPriority)record.Priority
                         };
 
                         // Add the item to the collection manager
@@ -1923,18 +2355,25 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
         {
             try
             {
-                // Stop the queue handler
+                _logger.Debug("[DIAGNOSTICS] Disposing DownloadTaskQueue");
                 StopQueueHandler();
-
-                // Dispose the collection manager
-                _collectionManager?.Dispose();
-
-                // Dispose any other resources
+                
+                // Dispose auto-save timer
+                if (_autoSaveTimer != null)
+                {
+                    _autoSaveTimer.Elapsed -= (sender, args) => AutoSaveQueue();
+                    _autoSaveTimer.Dispose();
+                    _autoSaveTimer = null;
+                }
+                
                 _processingCancellationSource?.Dispose();
+                _processingCancellationSource = null;
+                _collectionManager?.Dispose();
+                _logger.Debug("[DIAGNOSTICS] DownloadTaskQueue disposed");
             }
             catch (Exception ex)
             {
-                _logger?.Error(ex, "Error disposing DownloadTaskQueue");
+                _logger.Error(ex, "[DIAGNOSTICS] Error disposing DownloadTaskQueue");
             }
         }
 
@@ -2018,25 +2457,161 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                 rateInfo = $"{LogEmojis.Time} Rate: ~{_stats.DownloadRatePerHour}/hr, est. completion: {estimatedTime}";
             }
             
-            // Log compact status update
-            _logger.Info($"{LogEmojis.Status} TIDAL QUEUE: {pendingCount} items {processingStr}{throttleStr}");
-            
+            // Log compact status update with enhanced format
+            _logger.Info($"{LogEmojis.Status} ━━━━━━ QUEUE STATUS ━━━━━━");
+            _logger.Info($"{LogEmojis.Queue}  •  Items: {pendingCount}  •  Status: {processingStr.Trim()}");
+
             if (!string.IsNullOrEmpty(nextItemStr))
             {
-                _logger.Info($"   {nextItemStr}");
+                string artist = nextItem.Artist;
+                string album = nextItem.Album;
+                _logger.Info($"{LogEmojis.Next}  •  Coming up  •  \"{album}\"  •  Artist: {artist}");
             }
-            
+
             if (!string.IsNullOrEmpty(rateInfo))
             {
-                _logger.Info($"   {rateInfo}");
+                // Extract the estimated time from rateInfo
+                double estimatedHours = (double)pendingCount / _stats.DownloadRatePerHour;
+                string estimatedTime = estimatedHours < 1
+                    ? $"{(int)(estimatedHours * 60)}m"
+                    : $"{(int)estimatedHours}h {(int)((estimatedHours - Math.Floor(estimatedHours)) * 60)}m";
+                    
+                _logger.Info($"{LogEmojis.Time}  •  Rate: ~{_stats.DownloadRatePerHour}/hr  •  Est. completion: {estimatedTime}");
             }
-            
+
             // Add throttle details if throttled
             if (isThrottled)
             {
-                _logger.Info($"   {LogEmojis.Info} {_stats.GetRateLimitStatusString()}");
+                var limitStatus = _stats.GetRateLimitStatusString().Replace($"{LogEmojis.Stop} ", "").Replace($"{LogEmojis.Warning} ", "");
+                _logger.Info($"{LogEmojis.Wait}  •  Rate limit  •  {limitStatus}");
+            }
+            _logger.Info($"{LogEmojis.Status} ━━━━━━━━━━━━━━━━━━━━━━━━━");
+        }
+
+        /// <summary>
+        /// Gets the next item from the queue to download.
+        /// </summary>
+        /// <param name="settings">The Tidal settings.</param>
+        /// <param name="cancellationToken">A token to monitor for cancellation requests.</param>
+        /// <returns>The next item to download, or null if no more items are available.</returns>
+        private Task<IDownloadItem> GetNextItemFromQueue(TidalSettings settings, CancellationToken cancellationToken)
+        {
+            try
+            {
+                // Get all items from the queue
+                var items = _collectionManager.GetAllItems();
+                _logger?.Debug($"[DIAGNOSTIC] CheckForNextDownload - Got {items.Length} items from queue");
+                
+                // First check if we have any items ready to download
+                var queuedItems = items.Where(item => item.Status.Equals(NzbDrone.Core.Download.Clients.Tidal.Interfaces.DownloadItemStatus.Queued))
+                    .OrderByDescending(item => item.Priority) // Order by priority highest first
+                    .ThenBy(item => item.QueuedTime)  // Then by queue time (FIFO)
+                    .ToArray();
+                
+                // Log priority distribution for debugging
+                if (queuedItems.Length > 0)
+                {
+                    var priorityGroups = queuedItems.GroupBy(item => item.Priority)
+                        .Select(g => $"{g.Key}: {g.Count()}")
+                        .ToArray();
+                        
+                    _logger?.Debug($"[DIAGNOSTIC] Priority distribution: {string.Join(", ", priorityGroups)}");
+                }
+
+                if (queuedItems.Length == 0)
+                {
+                    _logger?.Debug("[DIAGNOSTIC] No queued items available");
+                    return Task.FromResult<IDownloadItem>(null);
+                }
+
+                // Apply natural behavior limits if enabled
+                if (settings.EnableNaturalBehavior)
+                {
+                    // Natural behavior settings may prevent downloads even if items are available
+                    bool allowDownload = _naturalScheduler.ShouldProcessQueue(queuedItems.Length);
+                    if (!allowDownload)
+                    {
+                        _logger?.Debug("[DIAGNOSTIC] Natural behavior preventing download at this time");
+                        return Task.FromResult<IDownloadItem>(null);
+                    }
+                }
+
+                // Get the next item from the queue based on priority
+                var nextItem = queuedItems.FirstOrDefault();
+                
+                if (nextItem != null)
+                {
+                    // Log priority information
+                    string priorityText = nextItem.Priority.ToString();
+                    _logger?.Debug($"[DIAGNOSTIC] Next download: {nextItem.Title} by {nextItem.Artist} (Priority: {priorityText})");
+                }
+                else
+                {
+                    _logger?.Debug("[DIAGNOSTIC] No item found after filtering");
+                }
+
+                return Task.FromResult(nextItem);
+            }
+            catch (Exception ex)
+            {
+                _logger?.Error(ex, "[DIAGNOSTIC] Error getting next item from queue");
+                return Task.FromResult<IDownloadItem>(null);
             }
         }
 
+        /// <summary>
+        /// Sets the priority of a queued download item.
+        /// </summary>
+        /// <param name="itemId">The ID of the download item.</param>
+        /// <param name="priority">The new priority to set.</param>
+        /// <returns>True if the priority was successfully set, false otherwise.</returns>
+        public bool SetItemPriority(string itemId, NzbDrone.Core.Download.Clients.Tidal.Interfaces.DownloadItemPriority priority)
+        {
+            if (string.IsNullOrEmpty(itemId))
+            {
+                _logger?.Warn($"{LogEmojis.Warning} Cannot set priority: Invalid item ID");
+                return false;
+            }
+
+            try
+            {
+                // Get all items from the queue
+                var items = _collectionManager.GetAllItems();
+                
+                // Find the item with the specified ID
+                var item = items.FirstOrDefault(i => i.Id == itemId);
+                
+                if (item == null)
+                {
+                    _logger?.Warn($"{LogEmojis.Warning} Cannot set priority: Item with ID {itemId} not found in queue");
+                    return false;
+                }
+                
+                // Only allow changing priority for items that are queued
+                if (!item.Status.Equals(NzbDrone.Core.Download.Clients.Tidal.Interfaces.DownloadItemStatus.Queued))
+                {
+                    _logger?.Warn($"{LogEmojis.Warning} Cannot change priority for item '{item.Title}' because it is not in queued state");
+                    return false;
+                }
+                
+                // Set the new priority
+                item.Priority = priority;
+                
+                _logger?.Info($"{LogEmojis.Info} Set priority of '{item.Title}' by {item.Artist} to {priority}");
+                
+                // Save the queue to disk after changing priority
+                if (_settings.EnableQueuePersistence)
+                {
+                    SaveQueueToDisk();
+                }
+                
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger?.Error(ex, $"{LogEmojis.Error} Error setting priority for item {itemId}: {ex.Message}");
+                return false;
+            }
+        }
     }
 }

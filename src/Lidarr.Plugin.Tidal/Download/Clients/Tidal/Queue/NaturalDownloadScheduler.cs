@@ -46,8 +46,11 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
         /// <returns>The next item to process, or null if none available</returns>
         public async Task<IDownloadItem> GetNextItem(CancellationToken token)
         {
-            // Apply natural behavior delay
-            await _behaviorSimulator.ApplyNaturalBehaviorDelay(_settings, null, token);
+            // Apply natural behavior delay only if natural behavior is enabled and queue processing with natural behavior is enabled
+            if (_settings.EnableNaturalBehavior && _settings.ProcessQueueWithNaturalBehavior)
+            {
+                await _behaviorSimulator.ApplyNaturalBehaviorDelay(_settings, null, token);
+            }
 
             // Get all items in the queue
             var allItems = _queue.GetQueueListing();
@@ -74,7 +77,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
             // Apply selection strategy based on settings
             IDownloadItem selectedItem;
 
-            if (_settings.EnableNaturalBehavior)
+            if (_settings.EnableNaturalBehavior && _settings.ProcessQueueWithNaturalBehavior)
             {
                 if (_settings.PreferArtistGrouping)
                 {
@@ -184,7 +187,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
         public bool ShouldProcessQueue(int queueSize)
         {
             // If natural behavior is disabled, always process
-            if (!_settings.EnableNaturalBehavior)
+            if (!_settings.EnableNaturalBehavior || !_settings.ProcessQueueWithNaturalBehavior)
                 return true;
 
             // Check for time-of-day restrictions

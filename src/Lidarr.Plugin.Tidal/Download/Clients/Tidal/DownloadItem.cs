@@ -129,6 +129,12 @@ namespace Lidarr.Plugin.Tidal.Download.Clients.Tidal
         public string LastErrorMessage { get; set; }
 
         /// <summary>
+        /// Gets or sets the priority of the download in the queue.
+        /// Higher priority items are processed before lower priority ones.
+        /// </summary>
+        public DownloadItemPriority Priority { get; set; } = DownloadItemPriority.Normal;
+
+        /// <summary>
         /// Gets or sets the folder where the download will be saved.
         /// </summary>
         public string DownloadFolder { get; set; }
@@ -233,7 +239,8 @@ namespace Lidarr.Plugin.Tidal.Download.Clients.Tidal
                 Lidarr.Plugin.Tidal.Services.ConcurrencyMonitor.Initialize(settings, logger);
 
                 // Log the start of download with more detailed information
-                logger.Info($"[TIDAL] {LogEmojis.Music} Starting download of {Title} by {Artist}");
+                logger.Info($"[TIDAL] {LogEmojis.Start} ════════ ALBUM DOWNLOAD ════════");
+                logger.Info($"[TIDAL] {LogEmojis.Album}  •  Title: \"{Title}\"  •  Artist: {Artist}");
 
                 // Extract album ID from the remote album
                 string albumId = null;
@@ -257,7 +264,7 @@ namespace Lidarr.Plugin.Tidal.Download.Clients.Tidal
 
                 if (string.IsNullOrEmpty(albumId))
                 {
-                    logger.Error($"[TIDAL] {LogEmojis.Error} Failed to extract album ID from release");
+                    logger.Error($"[TIDAL] {LogEmojis.Error}  •  No tracks found  •  Album ID: {albumId}");
                     SetFailed("Failed to extract album ID from release");
                     return;
                 }
@@ -338,17 +345,17 @@ namespace Lidarr.Plugin.Tidal.Download.Clients.Tidal
                         : "--:--";
 
                     // Log detailed album info
-                    logger.Info($"[TIDAL] {LogEmojis.Album} Found album: {albumTitle} by {artistName}");
-                    logger.Info($"[TIDAL] {LogEmojis.Info} Album details: {numberOfTracks} tracks, {albumDurationStr} total length");
+                    logger.Info($"[TIDAL] {LogEmojis.Album}  •  Found album  •  \"{albumTitle}\"  •  Artist: {artistName}");
+                    logger.Info($"[TIDAL] {LogEmojis.Track}  •  Tracks: {numberOfTracks}  •  Duration: {albumDurationStr}");
 
                     if (!string.IsNullOrEmpty(releaseDate))
                     {
-                        logger.Info($"[TIDAL] {LogEmojis.Schedule} Release date: {releaseDate}");
+                        logger.Info($"[TIDAL] {LogEmojis.Schedule}  •  Released: {releaseDate}");
                     }
 
                     if (!string.IsNullOrEmpty(audioQuality))
                     {
-                        logger.Info($"[TIDAL] {LogEmojis.Music} Quality: {audioQuality}");
+                        logger.Info($"[TIDAL] {LogEmojis.Music}  •  Quality: {audioQuality}");
                     }
 
                     // Create json file with album information
@@ -371,7 +378,7 @@ namespace Lidarr.Plugin.Tidal.Download.Clients.Tidal
                     var trackItems = tracksData["items"];
                     if (trackItems == null || !trackItems.Any())
                     {
-                        logger.Error($"[TIDAL] {LogEmojis.Error} No tracks found for album with ID: {albumId}");
+                        logger.Error($"[TIDAL] {LogEmojis.Error}  •  No tracks found  •  Album ID: {albumId}");
                         SetFailed($"No tracks found for album with ID: {albumId}");
                         return;
                     }
@@ -393,7 +400,7 @@ namespace Lidarr.Plugin.Tidal.Download.Clients.Tidal
                     }
                     else if (CompletedTracks < TotalTracks)
                     {
-                        logger.Warn($"[TIDAL] {LogEmojis.Warning} Downloaded {CompletedTracks}/{TotalTracks} tracks from album: {albumTitle}");
+                        logger.Warn($"[TIDAL] {LogEmojis.Warning}  •  Partial download  •  {CompletedTracks}/{TotalTracks} tracks  •  Album: \"{albumTitle}\"");
                         Status = DownloadItemStatus.Warning;
                         LastErrorMessage = $"Partially downloaded ({CompletedTracks}/{TotalTracks} tracks)";
                         EndTime = DateTime.UtcNow;
@@ -401,12 +408,12 @@ namespace Lidarr.Plugin.Tidal.Download.Clients.Tidal
                         // Log failed tracks
                         if (failedTracksList.Any())
                         {
-                            logger.Warn($"[TIDAL] {LogEmojis.Error} Failed tracks: #{string.Join(", #", failedTracksList.OrderBy(t => t))}");
+                            logger.Warn($"[TIDAL] {LogEmojis.Error}  •  Failed tracks  •  IDs: #{string.Join(", #", failedTracksList.OrderBy(t => t))}");
                         }
 
                         // Calculate download stats
                         var totalDownloadTime = EndTime.Value - StartTime;
-                        logger.Info($"[TIDAL] {LogEmojis.Time} Download completed in {FormatTimeSpan(totalDownloadTime)}");
+                        logger.Info($"[TIDAL] {LogEmojis.Time}  •  Download time  •  {FormatTimeSpan(totalDownloadTime)}");
 
                         // Get directory size info
                         DirectoryInfo dirInfo = new DirectoryInfo(albumFolder);
@@ -434,31 +441,34 @@ namespace Lidarr.Plugin.Tidal.Download.Clients.Tidal
                                 
                                 // Add a warning about subscription level
                                 logger.Warn($"[TIDAL] {LogEmojis.Warning} Quality downgrade detected in downloaded files.");
-                                logger.Warn($"[TIDAL] {LogEmojis.Info} Your Tidal subscription may not support the requested quality ({GetAudioQualityDescription(Bitrate)})");
+                                // Use simple track position indicator for subscription warning
+                                string subWarnIndicator = $"[{CompletedTracks}/{TotalTracks}]";
+                                logger.Warn($"[TIDAL] {LogEmojis.Info} {subWarnIndicator} Your Tidal subscription may not support {GetAudioQualityDescription(Bitrate)}");
                             }
 
                             // Calculate average file size
                             long avgFileSize = audioFiles.Count > 0 ? totalSize / audioFiles.Count : 0;
 
-                            // Log comprehensive download summary
-                            logger.Info($"[TIDAL] {LogEmojis.Folder} Downloaded to: {albumFolder}");
-                            logger.Info($"[TIDAL] {LogEmojis.Data} Download summary:");
-                            logger.Info($"   {LogEmojis.Album} Album: {Title} by {Artist}");
-                            logger.Info($"   {LogEmojis.Music} Quality: {qualityDesc}");
-                            logger.Info($"   {LogEmojis.Track} Tracks: {TotalTracks} total, {CompletedTracks} downloaded, {FailedTracks.Length} failed");
-                            logger.Info($"   {LogEmojis.File} Files: {flacCount} FLAC, {m4aCount} M4A");
-                            logger.Info($"   {LogEmojis.Data} Total size: {FormatFileSize(totalSize)} (avg: {FormatFileSize(avgFileSize)}/track)");
-                            logger.Info($"   {LogEmojis.Time} Download time: {FormatTimeSpan(totalDownloadTime)}");
+                            // Log comprehensive download summary with enhanced formatting
+                            logger.Info($"[TIDAL] {LogEmojis.Complete} ══════════ DOWNLOAD SUMMARY ══════════");
+                            logger.Info($"[TIDAL] {LogEmojis.Album}  •  Album: \"{Title}\"  •  Artist: {Artist}");
+                            logger.Info($"[TIDAL] {LogEmojis.Music}  •  Quality: {qualityDesc}");
+                            logger.Info($"[TIDAL] {LogEmojis.Track}  •  Tracks: {CompletedTracks}/{TotalTracks} downloaded{(FailedTracks.Length > 0 ? $", {FailedTracks.Length} failed" : "")}");
+                            logger.Info($"[TIDAL] {LogEmojis.File}  •  Files: {flacCount} FLAC, {m4aCount} M4A");
+                            logger.Info($"[TIDAL] {LogEmojis.Data}  •  Total size: {FormatFileSize(totalSize)}  •  Average: {FormatFileSize(avgFileSize)}/track");
+                            logger.Info($"[TIDAL] {LogEmojis.Time}  •  Download time: {FormatTimeSpan(totalDownloadTime)}");
+                            logger.Info($"[TIDAL] {LogEmojis.Folder}  •  Location: {albumFolder}");
+                            logger.Info($"[TIDAL] {LogEmojis.Complete} ═════════════════════════════════════");
                         }
                     }
                     else
                     {
-                        logger.Info($"[TIDAL] {LogEmojis.Music} Successfully downloaded all {TotalTracks} tracks from album: {albumTitle}");
+                        logger.Info($"[TIDAL] {LogEmojis.Music}  •  Download complete  •  All {TotalTracks} tracks  •  Album: \"{albumTitle}\"");
                         SetCompleted();
 
                         // Calculate download stats
                         var totalDownloadTime = EndTime.Value - StartTime;
-                        logger.Info($"[TIDAL] {LogEmojis.Time} Download completed in {FormatTimeSpan(totalDownloadTime)}");
+                        logger.Info($"[TIDAL] {LogEmojis.Time}  •  Download time  •  {FormatTimeSpan(totalDownloadTime)}");
 
                         // Get directory size info
                         DirectoryInfo dirInfo = new DirectoryInfo(albumFolder);
@@ -486,21 +496,24 @@ namespace Lidarr.Plugin.Tidal.Download.Clients.Tidal
                                 
                                 // Add a warning about subscription level
                                 logger.Warn($"[TIDAL] {LogEmojis.Warning} Quality downgrade detected in downloaded files.");
-                                logger.Warn($"[TIDAL] {LogEmojis.Info} Your Tidal subscription may not support the requested quality ({GetAudioQualityDescription(Bitrate)})");
+                                // Use simple track position indicator for subscription warning
+                                string subWarnIndicator = $"[{CompletedTracks}/{TotalTracks}]";
+                                logger.Warn($"[TIDAL] {LogEmojis.Info} {subWarnIndicator} Your Tidal subscription may not support {GetAudioQualityDescription(Bitrate)}");
                             }
 
                             // Calculate average file size
                             long avgFileSize = audioFiles.Count > 0 ? totalSize / audioFiles.Count : 0;
 
-                            // Log comprehensive download summary
-                            logger.Info($"[TIDAL] {LogEmojis.Folder} Downloaded to: {albumFolder}");
-                            logger.Info($"[TIDAL] {LogEmojis.Data} Download summary:");
-                            logger.Info($"   {LogEmojis.Album} Album: {Title} by {Artist}");
-                            logger.Info($"   {LogEmojis.Music} Quality: {qualityDesc}");
-                            logger.Info($"   {LogEmojis.Track} Tracks: {TotalTracks} total, {CompletedTracks} downloaded, {FailedTracks.Length} failed");
-                            logger.Info($"   {LogEmojis.File} Files: {flacCount} FLAC, {m4aCount} M4A");
-                            logger.Info($"   {LogEmojis.Data} Total size: {FormatFileSize(totalSize)} (avg: {FormatFileSize(avgFileSize)}/track)");
-                            logger.Info($"   {LogEmojis.Time} Download time: {FormatTimeSpan(totalDownloadTime)}");
+                            // Log comprehensive download summary with enhanced formatting
+                            logger.Info($"[TIDAL] {LogEmojis.Complete} ══════════ DOWNLOAD SUMMARY ══════════");
+                            logger.Info($"[TIDAL] {LogEmojis.Album}  •  Album: \"{Title}\"  •  Artist: {Artist}");
+                            logger.Info($"[TIDAL] {LogEmojis.Music}  •  Quality: {qualityDesc}");
+                            logger.Info($"[TIDAL] {LogEmojis.Track}  •  Tracks: {CompletedTracks}/{TotalTracks} downloaded{(FailedTracks.Length > 0 ? $", {FailedTracks.Length} failed" : "")}");
+                            logger.Info($"[TIDAL] {LogEmojis.File}  •  Files: {flacCount} FLAC, {m4aCount} M4A");
+                            logger.Info($"[TIDAL] {LogEmojis.Data}  •  Total size: {FormatFileSize(totalSize)}  •  Average: {FormatFileSize(avgFileSize)}/track");
+                            logger.Info($"[TIDAL] {LogEmojis.Time}  •  Download time: {FormatTimeSpan(totalDownloadTime)}");
+                            logger.Info($"[TIDAL] {LogEmojis.Folder}  •  Location: {albumFolder}");
+                            logger.Info($"[TIDAL] {LogEmojis.Complete} ═════════════════════════════════════");
                         }
 
                         // Log track details for successful downloads
@@ -714,7 +727,7 @@ namespace Lidarr.Plugin.Tidal.Download.Clients.Tidal
                         }
                         else
                         {
-                            logger.Info($"[TIDAL] {LogEmojis.File} Track already exists with same or better quality, skipping: #{trackNumber} - {trackTitle}");
+                            logger.Info($"[TIDAL] {LogEmojis.File}  •  Track exists  •  Same/better quality  •  #{trackNumber:D2}  •  \"{trackTitle}\"");
                             shouldDownload = false;
                             CompletedTracks++;
                         }
@@ -729,7 +742,7 @@ namespace Lidarr.Plugin.Tidal.Download.Clients.Tidal
                     // Skip if the file already exists
                     if (File.Exists(trackFilePath))
                     {
-                        logger.Info($"[TIDAL] {LogEmojis.File} Track already exists, skipping: #{trackNumber} - {trackTitle}");
+                        logger.Info($"[TIDAL] {LogEmojis.File}  •  Track exists  •  Skipping  •  #{trackNumber:D2}  •  \"{trackTitle}\"");
                         CompletedTracks++;
                         continue;
                     }
@@ -742,7 +755,10 @@ namespace Lidarr.Plugin.Tidal.Download.Clients.Tidal
                     // Log track being downloaded with more details
                     string trackArtistsStr = trackArtists != Artist ? $" by {trackArtists}" : "";
                     string explicitTag = isExplicit ? " [E]" : "";
-                    logger.Info($"[TIDAL] {LogEmojis.Download} Downloading track #{trackNumber}/{TotalTracks}: {trackTitle}{explicitTag}{trackArtistsStr} ({durationStr})");
+                    // Create enhanced format with zero-padding and consistent spacing
+                    string trackIndicator = $"[{trackNumber:D2}/{TotalTracks:D2}]";
+                    string artistPart = string.IsNullOrEmpty(trackArtistsStr) ? Artist : trackArtistsStr.TrimStart(' ', 'b', 'y');
+                    logger.Info($"[TIDAL] {LogEmojis.Download} {trackIndicator}  \"{trackTitle}\"{explicitTag}  •  {artistPart}  •  ({durationStr})  •  Album: \"{Album}\"");
                     logger.Info($"[TIDAL] {LogEmojis.Track} Track details: ID: {trackId}, Quality: {quality}");
 
                     // Download track using TidalSharp
@@ -845,7 +861,9 @@ namespace Lidarr.Plugin.Tidal.Download.Clients.Tidal
                                         !formatInfo.HasFlacSignature && currentExtension == ".flac")
                                 {
                                     correctedFilePath = Path.Combine(directory, $"{fileNameWithoutExt}.m4a");
-                                    logger.Warn($"[TIDAL] {LogEmojis.Warning} Correcting file extension: .flac -> .m4a for {Path.GetFileName(trackFilePath)}");
+                                    // Use enhanced format for file extension corrections
+                                    string fileExtIndicator = $"[{trackNumber:D2}/{TotalTracks:D2}]";
+                                    logger.Warn($"[TIDAL] {LogEmojis.Warning} {fileExtIndicator}  •  Correcting file extension  •  .flac → .m4a  •  File: \"{Path.GetFileName(trackFilePath)}\"");
                                     
                                     // Log additional info about why this happened
                                     if (quality == TidalSharp.Data.AudioQuality.HI_RES_LOSSLESS)
@@ -987,7 +1005,7 @@ namespace Lidarr.Plugin.Tidal.Download.Clients.Tidal
                     string fileFormat = fileExtension.ToUpperInvariant();
 
                     // Log quality details and check for downgrades
-                    LogTrackQualityDetails(quality, fileExtension, fileFormat, logger);
+                    LogTrackQualityDetails(quality, fileExtension, fileFormat, trackNumber, TotalTracks, logger);
 
                     // Log LRC file details if created
                     if (!string.IsNullOrEmpty(lrcFilePath))
@@ -995,7 +1013,12 @@ namespace Lidarr.Plugin.Tidal.Download.Clients.Tidal
                         logger.Debug($"[TIDAL] {LogEmojis.Music} LRC file created at: {lrcFilePath}");
                     }
 
-                    logger.Info($"[TIDAL] {LogEmojis.Success} Downloaded track #{trackNumber}/{TotalTracks}: {trackTitle} ({fileSize})");
+                    // Create a visual progress indicator showing which track in the album is being processed
+                    int completeBarWidth = 20;
+                    int completePosition = (int)Math.Ceiling((double)trackNumber / TotalTracks * completeBarWidth);
+                    string completeProgressBar = "[" + new string('■', completePosition) + new string('□', completeBarWidth - completePosition) + "]";
+                    string albumInfoComplete = !string.IsNullOrEmpty(Album) ? $" - {Album}" : "";
+                    logger.Info($"[TIDAL] {LogEmojis.Success} {trackIndicator}  \"{trackTitle}\"{explicitTag}  •  {artistPart}  •  ({fileSize})  •  Album: \"{Album}\"");
 
                     CompletedTracks++;
 
@@ -1006,7 +1029,8 @@ namespace Lidarr.Plugin.Tidal.Download.Clients.Tidal
                     if ((DateTime.UtcNow - lastProgressUpdate).TotalMinutes >= 1)
                     {
                         lastProgressUpdate = DateTime.UtcNow;
-                        logger.Debug($"[TIDAL] {LogEmojis.Info} Download progress: {CompletedTracks}/{TotalTracks} tracks ({Progress:F1}%)");
+                        string progressIndicator = $"[{CompletedTracks:D2}/{TotalTracks:D2}]";
+                        logger.Debug($"[TIDAL] {LogEmojis.Info} {progressIndicator}  •  Album progress  •  {Progress:F1}% complete  •  Album: \"{Album}\"");
                     }
 
                     // Add appropriate delay based on settings
@@ -1020,7 +1044,10 @@ namespace Lidarr.Plugin.Tidal.Download.Clients.Tidal
                     var trackTitle = track["title"]?.ToString() ?? "Unknown";
                     var trackNumber = int.TryParse(track["trackNumber"]?.ToString(), out int tn) ? tn : 0;
 
-                    logger.Error(ex, $"[TIDAL] {LogEmojis.Error} Failed to download track #{trackNumber}/{TotalTracks} - {trackTitle}: {ex.Message}");
+                    // Use enhanced format for errors
+                    string errorIndicator = $"[{trackNumber:D2}/{TotalTracks:D2}]";
+                    // Variables for explicitTag and artist may not be defined in this scope - use simpler format
+                    logger.Error(ex, $"[TIDAL] {LogEmojis.Error} {errorIndicator}  \"{trackTitle}\"  •  {Artist}  •  FAILED: {ex.Message}  •  Album: \"{Album}\"");
                     failedTracksList.Add(trackNumber);
                 }
             }
@@ -1130,7 +1157,7 @@ namespace Lidarr.Plugin.Tidal.Download.Clients.Tidal
         /// <summary>
         /// Logs quality details and checks for potential quality downgrades
         /// </summary>
-        private void LogTrackQualityDetails(TidalSharp.Data.AudioQuality requestedQuality, string fileExtension, string fileFormat, Logger logger)
+        private void LogTrackQualityDetails(TidalSharp.Data.AudioQuality requestedQuality, string fileExtension, string fileFormat, int trackNumber, int totalTracks, Logger logger)
         {
             // Check if the file is the expected type based on quality
             bool isExpectedFormat = (requestedQuality == TidalSharp.Data.AudioQuality.LOSSLESS || 
@@ -1142,7 +1169,9 @@ namespace Lidarr.Plugin.Tidal.Download.Clients.Tidal
             if (!isExpectedFormat && (requestedQuality == TidalSharp.Data.AudioQuality.LOSSLESS || 
                                     requestedQuality == TidalSharp.Data.AudioQuality.HI_RES_LOSSLESS))
             {
-                logger.Warn($"[TIDAL] {LogEmojis.Warning} Quality downgrade detected! Requested {GetAudioQualityDescription(requestedQuality)} but received {fileFormat} format");
+                // Use enhanced format with padding for quality warnings
+                string warnIndicator = $"[{trackNumber:D2}/{totalTracks:D2}]";
+                logger.Warn($"[TIDAL] {LogEmojis.Warning} {warnIndicator}  •  Quality downgrade detected!  •  Requested: {GetAudioQualityDescription(requestedQuality)}  •  Received: {fileFormat}");
                 
                 // Determine actual quality based on the file extension
                 TidalSharp.Data.AudioQuality actualQuality = fileExtension.Equals("m4a", StringComparison.OrdinalIgnoreCase)
@@ -1152,14 +1181,16 @@ namespace Lidarr.Plugin.Tidal.Download.Clients.Tidal
                 // Get bitrate description based on actual quality
                 string bitrateDesc = GetAudioQualityDescription(actualQuality);
                 
-                logger.Info($"[TIDAL] {LogEmojis.Warning} Your Tidal subscription may not support {GetAudioQualityDescription(requestedQuality)}");
-                logger.Info($"[TIDAL] {LogEmojis.File} File details: {fileFormat}, {bitrateDesc} (downgraded from requested {GetAudioQualityDescription(requestedQuality)})");
+                logger.Info($"[TIDAL] {LogEmojis.Warning} {warnIndicator}  •  Subscription limitation  •  Your Tidal subscription may not support {GetAudioQualityDescription(requestedQuality)}");
+                logger.Info($"[TIDAL] {LogEmojis.File} {warnIndicator}  •  Downgraded format  •  Actual: {fileFormat}, {bitrateDesc}  •  Requested: {GetAudioQualityDescription(requestedQuality)}");
             }
             else
             {
                 // Get bitrate description based on quality
                 string bitrateDesc = GetAudioQualityDescription(requestedQuality);
-                logger.Info($"[TIDAL] {LogEmojis.File} File details: {fileFormat}, {bitrateDesc}");
+                // Create track indicator for this log message
+                string fileIndicator = $"[{trackNumber:D2}/{totalTracks:D2}]";
+                logger.Info($"[TIDAL] {LogEmojis.File} {fileIndicator}  •  File details  •  Format: {fileFormat}  •  Quality: {bitrateDesc}");
             }
         }
         

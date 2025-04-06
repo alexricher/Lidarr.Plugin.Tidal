@@ -2,7 +2,123 @@
 
 All notable changes to this project will be documented in this file.
 
-## [10.0.2.2] - 2024-04-01
+## [10.0.2.3] - 2024-04-06
+
+### Added
+- **Smart Pagination System**: Implemented sophisticated search pagination that adapts to different search contexts
+  - Added search intent detection to classify searches as artist discovery, discography, or specific album searches
+  - Added result metrics tracking to measure search effectiveness
+  - Implemented diminishing returns detection to stop pagination when additional results become less valuable
+  - Added search thoroughness levels for user control over search depth
+- **Improved Settings Organization**:
+  - Reorganized settings into logical sections for better user experience
+  - Added clearer help text for all settings
+  - Improved settings validation
+  - Enhanced settings explanations with performance impact details and recommendations for optimal configuration
+- **Performance Optimizations**:
+  - Enhanced rate limiting with more efficient token refresh
+  - Reduced API delay from 500ms to 200ms for faster searching
+  - Added HashSet for processed album IDs to prevent duplicate processing
+  - Implemented asynchronous track album processing for better performance
+  - Optimized search state tracking across multiple requests
+  - Added token check caching to reduce token bucket contention
+  - Implemented fast paths for common rate limiting scenarios
+  - Added result caching for expensive calculations
+  - Improved token bucket efficiency with optimized refill algorithm
+- **Unified Country Code Management**:
+  - Standardized country code handling across both indexer and download client
+  - Added dropdown with common country selections for easier configuration
+  - Implemented ISO validation for custom country codes
+  - Created centralized country code service for consistent regional content access
+- **Queue Priority System**:
+  - Added download priority feature with High, Normal, and Low priority levels
+  - Implemented priority-based queue processing to handle important downloads first
+  - Added automated priority assignment based on content type (new releases vs backlog)
+  - Added ability to manually change priorities through API or UI
+  - Created configurable default priorities in settings for different download scenarios
+  - Added priority visualization in logging and status reporting
+  - Implemented priority inheritance for grouped downloads
+- **Enhanced Queue Persistence**:
+  - Added automatic periodic saving of queue state every 2 minutes
+  - Implemented proper shutdown persistence to preserve queue across restarts
+  - Added robust file access validation with permission checking
+  - Created backup system for queue JSON files with recovery options
+  - Improved error handling with detailed diagnostics for queue persistence issues
+  - Implemented multiple backup versions with rotation
+  - Added atomic file operations for crash resilience
+  - Implemented file integrity verification with JSON validation
+  - Added smart auto-save interval adjustment based on processing delay settings
+  - Created centralized error recovery with multiple fallback paths
+  - Added path validation with test file writes to verify permissions
+  - Implemented proper application startup validation of persistence paths
+  - Added dynamic settings updates with path reinitialization
+  - Created comprehensive logging for persistence operations
+  - Added automatic backup creation before saving
+  - Implemented thread-safe file operations with proper locking
+  - Added retry logic with exponential backoff for transient errors
+- **Configurable Item Processing Delay**: Added a setting to control the delay between download item processing, helping to reduce resource contention and prevent search timeouts
+- **Improved Natural Behavior Controls**: Added ability to toggle natural behavior for queue processing independently of other natural behavior features
+- **Thread Safety Enhancements**:
+  - Replaced List with ConcurrentBag for thread-safe item collections
+  - Replaced Dictionary with ConcurrentDictionary for better concurrency
+  - Improved lock-free operations with GetOrAdd for semaphores
+  - Added proper exception handling in concurrent operations
+  - Reduced lock contention with more granular locking
+- **Memory Management Optimization**:
+  - Implemented BoundedCollection to prevent unbounded memory growth
+  - Added memory usage tracking and reporting
+  - Optimized collection operations to reduce memory pressure
+  - Implemented thread-safe counters with Interlocked operations
+  - Added optional memory usage diagnostics
+- **Error Handling Refinements**:
+  - Added specific exception handling for network, I/O, and permission errors
+  - Implemented automatic recovery from file system errors
+  - Enhanced retry logic with exponential backoff
+  - Added last-chance exception handlers to prevent queue failures
+  - Improved error diagnostic information
+
+### Changed
+- Improved search queue processing with multiple worker tasks to better utilize MaxConcurrentSearches setting
+- Enhanced logging to provide more detailed information about active searches and available slots
+- Improved search request generation with smarter rate limiting
+- Enhanced country code handling with better defaults
+- Reduced token refresh window from 2 to 5 minutes
+- Modified caching mechanism to be more selective about what gets cached
+- Made the pagination system more context-aware
+- Updated settings UI with better organization and descriptions
+- Improved queue persistence reliability with file locking and validation
+- Made rate limiting more intelligent with adaptive backoff for 429 responses
+- Refactored DownloadTaskQueue for better concurrency handling
+- Improved QueuePersistenceManager with more robust file operations
+- Enhanced TokenBucketRateLimiter with caching and fast paths
+- Reduced contention in high-throughput scenarios
+- Made file operations more resilient to crashes and interruptions
+- Improved diagnostics for memory usage and performance bottlenecks
+- Consolidated multiple rate limiter implementations into a single UnifiedRateLimiter with improved performance
+
+### Fixed
+- Fixed issue with parallel search requests not fully utilizing configured concurrency limits
+- Fixed rate limiter settings to properly use indexer's MaxRequestsPerMinute for search operations
+- Fixed potential memory leaks in search state tracking
+- Improved error handling in the request generator
+- Enhanced circuit breaker reliability
+- Fixed potential concurrency issues in the parser
+- Improved token bucket rate limiter to handle bursts better
+- Fixed queue persistence issues that could result in empty queue files
+- Added proper thread safety for file operations to prevent file corruption
+- Implemented fallback paths for queue persistence when primary path is unavailable
+- Fixed potential race conditions in queue processing
+- Improved handling of file system errors during persistence
+- Enhanced handling of network errors during downloads
+- Made token bucket more resistant to bursts of requests
+- Improved recovery from network failures with better circuit breaker patterns
+- Fixed memory leak in statistics tracking for large download operations
+- Fixed build error by updating method call from GetWaitTime() to GetEstimatedWaitTime() in UnifiedRateLimiter.cs
+- Fixed build error by adding missing properties for Smart Pagination in TidalIndexerSettings class
+- Fixed queue persistence auto-save functionality by implementing a 2-minute timer that was missing in the original code
+- Fixed TaskCanceledException issue during concurrent searching and downloading operations
+
+## [10.0.2.2] - 2024-04-04
 
 ### Added
 - **Queue Persistence**: Added functionality to save and restore the download queue across Lidarr restarts

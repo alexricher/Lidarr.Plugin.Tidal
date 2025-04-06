@@ -9,6 +9,14 @@ using NzbDrone.Core.Indexers.Tidal;
 using NzbDrone.Core.Download.Clients.Tidal.Services;
 using Lidarr.Plugin.Tidal.Download.Clients.Tidal.Utilities;
 
+/*
+ * DEPRECATED: This implementation has been replaced by UnifiedRateLimiter.
+ * This file is kept for reference only and will be removed in a future release.
+ * All rate limiting should use UnifiedRateLimiter instead, which provides
+ * improved rate limiting with better performance and reliability.
+ * See src/Lidarr.Plugin.Tidal/Services/UnifiedRateLimiter.cs for the new implementation.
+ */
+
 namespace Lidarr.Plugin.Tidal.Services
 {
     /// <summary>
@@ -183,13 +191,13 @@ namespace Lidarr.Plugin.Tidal.Services
                     // Update the rate limiter settings
                     int newRateLimit = type switch
                     {
-                        TidalRequestType.Search => newSettings.MaxDownloadsPerHour, // This should be from indexer settings
+                        TidalRequestType.Search => _indexerSettings.MaxRequestsPerMinute, // Use indexer settings for search
                         TidalRequestType.Download => newSettings.MaxDownloadsPerHour,
                         _ => throw new ArgumentException($"Unknown request type: {type}")
                     };
 
                     rateLimiter.UpdateSettings(newRateLimit);
-                    _logger.Info($"[{type}] Rate limiter settings updated to {newRateLimit}/hour");
+                    _logger.Info($"[{type}] Rate limiter settings updated to {newRateLimit}/{(type == TidalRequestType.Search ? "minute" : "hour")}");
                 }
                 else
                 {
@@ -209,9 +217,17 @@ namespace Lidarr.Plugin.Tidal.Services
 
             try
             {
+                // Store the new settings
+                if (indexerSettings != null)
+                {
+                    _indexerSettings.MaxConcurrentSearches = indexerSettings.MaxConcurrentSearches;
+                    _indexerSettings.MaxRequestsPerMinute = indexerSettings.MaxRequestsPerMinute;
+                    _logger.Debug($"Updated indexer settings: MaxConcurrentSearches={_indexerSettings.MaxConcurrentSearches}, MaxRequestsPerMinute={_indexerSettings.MaxRequestsPerMinute}");
+                }
+
                 // Update search rate limiter settings
                 OnSettingsChanged(downloadSettings, TidalRequestType.Search);
-                
+
                 // Update download rate limiter settings
                 OnSettingsChanged(downloadSettings, TidalRequestType.Download);
             }

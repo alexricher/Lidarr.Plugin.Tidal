@@ -1,8 +1,10 @@
 using System.Reflection;
+using Lidarr.Plugin.Tidal.Services;
 using Lidarr.Plugin.Tidal.Services.Behavior;
 using Lidarr.Plugin.Tidal.Services.Country;
 using Lidarr.Plugin.Tidal.Services.FileSystem;
 using Microsoft.Extensions.DependencyInjection;
+using NzbDrone.Core.Download.Clients.Tidal.Services;
 
 namespace NzbDrone.Core.Plugins
 {
@@ -38,6 +40,7 @@ namespace NzbDrone.Core.Plugins
             services.AddSingleton<IFileSystemService, FileSystemService>();
             services.AddSingleton<IBehaviorProfileService, BehaviorProfileService>();
             services.AddSingleton<ICountryManagerService, CountryManagerService>();
+            services.AddSingleton<IRateLimiter, UnifiedRateLimiter>();
             
             // Other registrations
             // ... existing code ...

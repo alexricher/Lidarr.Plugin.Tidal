@@ -89,7 +89,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal
                 {
                     _logger?.Debug("Initializing TidalProxy components");
 
-                    // Create a default settings object to avoid NullReferenceException
+                    // Create a default settings object with proper initialization values
                     var defaultSettings = new TidalSettings
                     {
                         MaxConcurrentTrackDownloads = 1,
@@ -102,21 +102,30 @@ namespace NzbDrone.Core.Download.Clients.Tidal
                         CircuitBreakerResetTimeMinutes = 10,
                         CircuitBreakerHalfOpenMaxAttempts = 1,
                         QueueOperationTimeoutSeconds = 60,
-                        // Initialize with an explicitly null status files path to avoid NRE
-                        StatusFilesPath = null,
-                        // Disable status files by default since we're in a default configuration
-                        GenerateStatusFiles = false
+                        QueueCapacity = 100,
+                        // Ensure persistence is enabled by default
+                        EnableQueuePersistence = true,
+                        // Use a valid default path for queue persistence - use temp directory
+                        QueuePersistencePath = Path.Combine(Path.GetTempPath(), "Lidarr", "TidalQueue")
                     };
 
                     try
                     {
+                        // Create the temp directory if it doesn't exist
+                        string tempQueuePath = defaultSettings.QueuePersistencePath;
+                        if (!Directory.Exists(tempQueuePath))
+                        {
+                            _logger?.Debug($"[DIAGNOSTIC] Creating default queue persistence directory: {tempQueuePath}");
+                            Directory.CreateDirectory(tempQueuePath);
+                        }
+
                         _logger?.Debug("[DIAGNOSTIC] Creating file system service");
                         // Create file system service first
                         var fileSystemService = new Lidarr.Plugin.Tidal.Services.FileSystem.FileSystemService();
                         
                         _logger?.Debug("[DIAGNOSTIC] Creating download queue");
-                        // Then create download queue with explicit file system service
-                        _downloadQueue = new Queue.DownloadTaskQueue(100, defaultSettings, _logger);
+                        // Use settings.QueueCapacity for queue size rather than hardcoded value
+                        _downloadQueue = new Queue.DownloadTaskQueue(defaultSettings.QueueCapacity, defaultSettings, _logger);
                         
                         _logger?.Debug("[DIAGNOSTIC] Creating circuit breaker");
                         _circuitBreaker = new TidalCircuitBreakerAdapter(_logger);
@@ -223,6 +232,30 @@ namespace NzbDrone.Core.Download.Clients.Tidal
                     RemoteAlbum = remoteAlbum,
                     Settings = settings
                 };
+
+                // Set appropriate priority based on release date
+                if (settings.EnablePrioritySystem)
+                {
+                    // Determine if this is a new release
+                    bool isNewRelease = false;
+                    if (remoteAlbum.Release?.PublishDate != null)
+                    {
+                        // Consider releases from the last 30 days as "new"
+                        isNewRelease = (DateTime.UtcNow - remoteAlbum.Release.PublishDate).TotalDays <= 30;
+                    }
+
+                    // Set priority based on release type
+                    if (isNewRelease)
+                    {
+                        downloadItem.Priority = (NzbDrone.Core.Download.Clients.Tidal.Interfaces.DownloadItemPriority)settings.DefaultNewReleasePriority;
+                        _logger?.Debug($"[DIAGNOSTIC] Setting priority to {downloadItem.Priority} (New Release) for '{albumTitle}'");
+                    }
+                    else
+                    {
+                        downloadItem.Priority = (NzbDrone.Core.Download.Clients.Tidal.Interfaces.DownloadItemPriority)settings.DefaultBacklogPriority;
+                        _logger?.Debug($"[DIAGNOSTIC] Setting priority to {downloadItem.Priority} (Backlog) for '{albumTitle}'");
+                    }
+                }
 
                 _logger?.Debug("[DIAGNOSTIC] About to queue download item");
                 // Queue the download - duplicate detection happens in DownloadTaskQueue
@@ -354,6 +387,37 @@ namespace NzbDrone.Core.Download.Clients.Tidal
 
             // Get the time until the circuit breaker reopens
             return _circuitBreaker?.GetReopenTime() ?? TimeSpan.FromMinutes(1);
+        }
+
+        /// <summary>
+        /// Updates the proxy with new settings
+        /// </summary>
+        /// <param name="settings">The updated Tidal settings</param>
+        public void UpdateSettings(TidalSettings settings)
+        {
+            EnsureInitialized();
+
+            try
+            {
+                _logger?.Debug("Updating TidalProxy settings");
+                
+                // Update the download queue with new settings if it exists
+                if (_downloadQueue != null)
+                {
+                    _downloadQueue.SetSettings(settings);
+                    _logger?.Debug("Updated download queue settings");
+                }
+                
+                // We could reinitialize the circuit breaker here if needed, but we'll 
+                // keep it simple for now to avoid breaking changes
+                
+                _logger?.Info("TidalProxy settings updated successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger?.Error(ex, "Error updating TidalProxy settings");
+                throw;
+            }
         }
     }
 }

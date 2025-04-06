@@ -1,14 +1,17 @@
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Globalization;
+using System.IO;
+using System.Linq;
 using FluentValidation;
 using NLog;
+using NzbDrone.Common.Extensions;
 using NzbDrone.Core.Annotations;
 using NzbDrone.Core.ThingiProvider;
 using NzbDrone.Core.Validation;
 using NzbDrone.Core.Validation.Paths;
 using NzbDrone.Plugin.Tidal;
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Text.Json;
 using System.Threading; // For Mutex and AbandonedMutexException
 using Lidarr.Plugin.Tidal.Indexers.Tidal; // For CacheStrategyType
 using NzbDrone.Core.Download.Clients.Tidal.Utilities;
@@ -16,6 +19,9 @@ using NzbDrone.Core.Download;
 using Lidarr.Plugin.Tidal.Download.Clients.Tidal.Utilities;
 using Lidarr.Plugin.Tidal.Services.FileSystem;
 using Lidarr.Plugin.Tidal.Services.Behavior;
+
+// Suppresses warnings about obsolete properties we need to keep for backward compatibility
+#pragma warning disable CS0618
 
 namespace NzbDrone.Core.Download.Clients.Tidal
 {
@@ -61,16 +67,6 @@ namespace NzbDrone.Core.Download.Clients.Tidal
                 .GreaterThan(0)
                 .When(x => x.EnableNaturalBehavior)
                 .WithMessage("Break duration must be greater than 0 minutes");
-
-            RuleFor(x => x.DownloadDelayMin)
-                .GreaterThan(0)
-                .When(x => x.EnableNaturalBehavior || x.DownloadDelay)
-                .WithMessage("Minimum delay must be greater than 0 seconds");
-
-            RuleFor(x => x.DownloadDelayMax)
-                .GreaterThanOrEqualTo(x => x.DownloadDelayMin)
-                .When(x => x.EnableNaturalBehavior || x.DownloadDelay)
-                .WithMessage("Maximum delay must be greater than or equal to minimum delay");
 
             // Advanced behavior validation rules
             RuleFor(x => x.TrackToTrackDelayMin)
@@ -130,6 +126,13 @@ namespace NzbDrone.Core.Download.Clients.Tidal
                 .GreaterThan(0)
                 .WithMessage("Stats log interval must be greater than 0 minutes");
 
+            // Add validation for QueueCapacity
+            RuleFor(x => x.QueueCapacity)
+                .GreaterThanOrEqualTo(50)
+                .WithMessage("Queue capacity must be at least 50")
+                .LessThanOrEqualTo(500)
+                .WithMessage("Queue capacity cannot exceed 500");
+
             RuleFor(x => x.DownloadPath)
                 .NotEmpty()
                 .WithMessage("Download path cannot be empty")
@@ -161,6 +164,13 @@ namespace NzbDrone.Core.Download.Clients.Tidal
             RuleFor(x => x.MaxTrackFailures)
                 .GreaterThan(0)
                 .WithMessage("Max track failures must be greater than 0");
+
+            // Add validation for item processing delay
+            RuleFor(x => x.ItemProcessingDelayMs)
+                .GreaterThanOrEqualTo(0)
+                .WithMessage("Item processing delay must be greater than or equal to 0 milliseconds")
+                .LessThanOrEqualTo(5000)
+                .WithMessage("Item processing delay should not exceed 5000 milliseconds (5 seconds)");
         }
     }
 
@@ -402,17 +412,26 @@ namespace NzbDrone.Core.Download.Clients.Tidal
         [FieldDefinition(5, Label = "Download Directory", Type = FieldType.Path, HelpText = "Directory where Tidal music will be downloaded to before being imported by Lidarr", Section = "Basic Settings")]
         public string DownloadPath { get; set; } = "";
 
-        [FieldDefinition(6, Label = "Max Concurrent Downloads", HelpText = "Maximum number of tracks to download simultaneously. Values above 2-3 can lead to file corruption during high-volume operations due to I/O contention.", Type = FieldType.Number, Section = "Basic Settings")]
+        [FieldDefinition(6, Label = "Max Concurrent Track Downloads", HelpText = "Maximum number of tracks to download simultaneously. PERFORMANCE IMPACT: 1 = Most stable, slowest. 2-3 = Good balance. 4+ = Faster but may cause issues during large operations.", Section = "Performance Tuning")]
         public int MaxConcurrentDownloads { get; set; } = 2;
 
         // Backwards compatibility property - not shown in UI but used by code
+        [Obsolete("Use MaxConcurrentDownloads instead")]
         public int MaxConcurrentTrackDownloads
         {
             get => MaxConcurrentDownloads;
             set => MaxConcurrentDownloads = value;
         }
 
-        [FieldDefinition(6, Label = "Serialize File Operations", HelpText = "Prevents file corruption by serializing file I/O operations during high load", Type = FieldType.Checkbox, Section = "Basic Settings")]
+        // Legacy property - not shown in UI but used by code
+        [Obsolete("Use SimulateListeningPatterns instead")]
+        public bool SimulateDelays
+        {
+            get => SimulateListeningPatterns; // Always enabled now through TrackToTrackDelay settings
+            set => SimulateListeningPatterns = value;
+        }
+
+        [FieldDefinition(6, Label = "Serialize File Operations", HelpText = "Prevents file corruption by serializing file I/O operations during high load", Type = FieldType.Checkbox, Section = "Performance Tuning")]
         public bool SerializeFileOperations { get; set; } = true;
 
         [FieldDefinition(7, Label = "Preferred Quality", Type = FieldType.Select, SelectOptions = typeof(AudioQualityProfile), HelpText = "Select the preferred audio quality for downloads", Section = "Basic Settings")]
@@ -520,105 +539,98 @@ namespace NzbDrone.Core.Download.Clients.Tidal
         [FieldDefinition(27, Label = "Stats Log Interval (Minutes)", HelpText = "How often to log queue statistics to the log file.", Type = FieldType.Number, Section = "Advanced Settings", Advanced = true)]
         public int StatsLogIntervalMinutes { get; set; } = 15;
 
+        [FieldDefinition(28, Label = "Queue Capacity", HelpText = "Maximum number of albums that can be queued at once. Increase for larger libraries but may impact performance. Default: 100, Range: 50-500", Type = FieldType.Number, Section = "Queue Management")]
+        public int QueueCapacity { get; set; } = 100;
+
         // Cache settings
-        [FieldDefinition(28, Label = "Memory Limit (MB)", HelpText = "Maximum memory to use for cache. Set to 0 for no limit.", Type = FieldType.Number, Section = "Cache Settings", Advanced = true)]
+        [FieldDefinition(29, Label = "Memory Limit (MB)", HelpText = "Maximum memory to use for cache. Set to 0 for no limit.", Type = FieldType.Number, Section = "Cache Settings", Advanced = true)]
         public int MemoryLimitMB { get; set; } = 100;
 
         // Natural behavior settings
-        [FieldDefinition(29, Label = "Enable Natural Behavior", HelpText = "Simulates human-like download patterns to help avoid detection systems.", Type = FieldType.Checkbox, Section = "Natural Behavior")]
+        [FieldDefinition(30, Label = "Enable Natural Behavior", HelpText = "Simulates human-like download patterns to help avoid detection systems.", Type = FieldType.Checkbox, Section = "Natural Behavior")]
         public bool EnableNaturalBehavior { get; set; } = true;
 
-        [FieldDefinition(30, Label = "Session Duration", HelpText = "How long to continuously download before taking a break (in minutes).", Type = FieldType.Number, Section = "Natural Behavior")]
+        [FieldDefinition(31, Label = "Session Duration", HelpText = "How long to continuously download before taking a break (in minutes).", Type = FieldType.Number, Section = "Natural Behavior")]
         public int SessionDurationMinutes { get; set; } = 120;
 
-        [FieldDefinition(31, Label = "Break Duration", HelpText = "How long to pause between download sessions (in minutes).", Type = FieldType.Number, Section = "Natural Behavior")]
+        [FieldDefinition(32, Label = "Break Duration", HelpText = "How long to pause between download sessions (in minutes).", Type = FieldType.Number, Section = "Natural Behavior")]
         public int BreakDurationMinutes { get; set; } = 30;
 
-        [FieldDefinition(32, Label = "Adapt to Time of Day", HelpText = "Only download during specific hours of the day.", Type = FieldType.Checkbox, Section = "Natural Behavior")]
+        [FieldDefinition(33, Label = "Adapt to Time of Day", HelpText = "Only download during specific hours of the day.", Type = FieldType.Checkbox, Section = "Natural Behavior")]
         public bool TimeOfDayAdaptation { get; set; } = false;
 
-        [FieldDefinition(33, Label = "Active Hours Start", HelpText = "Hour to begin downloads (0-23, 24-hour format).", Type = FieldType.Number, Section = "Natural Behavior")]
+        [FieldDefinition(34, Label = "Active Hours Start", HelpText = "Hour to begin downloads (0-23, 24-hour format).", Type = FieldType.Number, Section = "Natural Behavior")]
         public int ActiveHoursStart { get; set; } = 8;
 
-        [FieldDefinition(34, Label = "Active Hours End", HelpText = "Hour to stop downloads (0-23, 24-hour format).", Type = FieldType.Number, Section = "Natural Behavior")]
+        [FieldDefinition(35, Label = "Active Hours End", HelpText = "Hour to stop downloads (0-23, 24-hour format).", Type = FieldType.Number, Section = "Natural Behavior")]
         public int ActiveHoursEnd { get; set; } = 22;
 
         // Add Circuit Breaker section
-        [FieldDefinition(35, Label = "Circuit Breaker Failure Threshold", 
+        [FieldDefinition(36, Label = "Circuit Breaker Failure Threshold", 
             HelpText = "Number of consecutive failures before the circuit breaker opens", 
             Type = FieldType.Number, Section = "Circuit Breaker", Advanced = true)]
         public int CircuitBreakerFailureThreshold { get; set; } = 8;
 
-        [FieldDefinition(36, Label = "Circuit Breaker Reset Time (Minutes)", 
+        [FieldDefinition(37, Label = "Circuit Breaker Reset Time (Minutes)", 
             HelpText = "Time to wait before attempting to reset the circuit breaker", 
             Type = FieldType.Number, Section = "Circuit Breaker", Advanced = true)]
         public int CircuitBreakerResetTimeMinutes { get; set; } = 15;
 
-        [FieldDefinition(37, Label = "Circuit Breaker Half-Open Max Attempts", 
+        [FieldDefinition(38, Label = "Circuit Breaker Half-Open Max Attempts", 
             HelpText = "Maximum number of operations to allow in half-open state before fully reopening", 
             Type = FieldType.Number, Section = "Circuit Breaker", Advanced = true)]
         public int CircuitBreakerHalfOpenMaxAttempts { get; set; } = 3;
 
         // Queue operation timeout
-        [FieldDefinition(38, Label = "Queue Operation Timeout (Seconds)", 
+        [FieldDefinition(39, Label = "Queue Operation Timeout (Seconds)", 
             HelpText = "Maximum time allowed for queue operations", 
             Type = FieldType.Number, Section = "Advanced Settings", Advanced = true)]
         public int QueueOperationTimeoutSeconds { get; set; } = 60;
         
-        // Legacy settings
-        [FieldDefinition(39, Label = "Download Delay (Legacy)", HelpText = "Legacy option: When downloading many tracks, Tidal may rate-limit you. This will add a delay between track downloads to help prevent this.", Type = FieldType.Checkbox, Section = "Legacy Settings", Advanced = true)]
-        public bool DownloadDelay { get; set; } = false;
-
-        [FieldDefinition(40, Label = "Download Delay Minimum (Legacy)", HelpText = "Minimum download delay, in seconds.", Type = FieldType.Number, Section = "Legacy Settings", Advanced = true)]
-        public float DownloadDelayMin { get; set; } = 3.0f;
-
-        [FieldDefinition(41, Label = "Download Delay Maximum (Legacy)", HelpText = "Maximum download delay, in seconds.", Type = FieldType.Number, Section = "Legacy Settings", Advanced = true)]
-        public float DownloadDelayMax { get; set; } = 5.0f;
-
         // Listening Pattern Simulation
-        [FieldDefinition(42, Label = "Simulate Listening Patterns", HelpText = "Add realistic delays between tracks and albums to simulate actual listening behavior.", Type = FieldType.Checkbox, Section = "Listening Pattern Simulation")]
+        [FieldDefinition(40, Label = "Simulate Listening Patterns", HelpText = "Add realistic delays between tracks and albums to simulate actual listening behavior.", Type = FieldType.Checkbox, Section = "Listening Pattern Simulation")]
         public bool SimulateListeningPatterns { get; set; } = true;
 
-        [FieldDefinition(43, Label = "Track-to-Track Delay Min", HelpText = "Minimum delay between tracks in the same album (seconds).", Type = FieldType.Number, Section = "Listening Pattern Simulation")]
+        [FieldDefinition(41, Label = "Track-to-Track Delay Min", HelpText = "Minimum delay between tracks in the same album (seconds).", Type = FieldType.Number, Section = "Listening Pattern Simulation")]
         public float TrackToTrackDelayMin { get; set; } = 0.5f;
 
-        [FieldDefinition(44, Label = "Track-to-Track Delay Max", HelpText = "Maximum delay between tracks in the same album (seconds).", Type = FieldType.Number, Section = "Listening Pattern Simulation")]
+        [FieldDefinition(42, Label = "Track-to-Track Delay Max", HelpText = "Maximum delay between tracks in the same album (seconds).", Type = FieldType.Number, Section = "Listening Pattern Simulation")]
         public float TrackToTrackDelayMax { get; set; } = 3.0f;
 
-        [FieldDefinition(45, Label = "Album-to-Album Delay Min", HelpText = "Minimum delay between different albums (seconds).", Type = FieldType.Number, Section = "Listening Pattern Simulation")]
+        [FieldDefinition(43, Label = "Album-to-Album Delay Min", HelpText = "Minimum delay between different albums (seconds).", Type = FieldType.Number, Section = "Listening Pattern Simulation")]
         public float AlbumToAlbumDelayMin { get; set; } = 5.0f;
 
-        [FieldDefinition(46, Label = "Album-to-Album Delay Max", HelpText = "Maximum delay between different albums (seconds).", Type = FieldType.Number, Section = "Listening Pattern Simulation")]
+        [FieldDefinition(44, Label = "Album-to-Album Delay Max", HelpText = "Maximum delay between different albums (seconds).", Type = FieldType.Number, Section = "Listening Pattern Simulation")]
         public float AlbumToAlbumDelayMax { get; set; } = 15.0f;
 
         // Rate limiting
-        [FieldDefinition(47, Label = "Max Downloads Per Hour", Type = FieldType.Number, HelpText = "Maximum downloads per hour to avoid rate limiting (0 = unlimited)", Section = "Rate Limiting", Advanced = true)]
-        public int MaxDownloadsPerHour { get; set; } = 200;
+        [FieldDefinition(45, Label = "Max Downloads Per Hour", Type = FieldType.Number, HelpText = "Maximum downloads per hour to avoid rate limiting. IMPACT: 0 = unlimited (not recommended). 20-30 = balanced. 10-15 = most conservative.", Section = "Performance Tuning", Advanced = true)]
+        public int MaxDownloadsPerHour { get; set; } = 30;
 
         // Album/Artist Organization 
-        [FieldDefinition(48, Label = "Complete Albums", HelpText = "Complete all tracks from the same album before moving to another album.", Type = FieldType.Checkbox, Section = "Album/Artist Organization")]
+        [FieldDefinition(46, Label = "Complete Albums", HelpText = "Complete all tracks from the same album before moving to another album.", Type = FieldType.Checkbox, Section = "Album/Artist Organization")]
         public bool CompleteAlbums { get; set; } = true;
 
-        [FieldDefinition(49, Label = "Preserve Artist Context", HelpText = "After completing an album, prefer the next album from the same artist.", Type = FieldType.Checkbox, Section = "Album/Artist Organization")]
+        [FieldDefinition(47, Label = "Preserve Artist Context", HelpText = "After completing an album, prefer the next album from the same artist.", Type = FieldType.Checkbox, Section = "Album/Artist Organization")]
         public bool PreferArtistGrouping { get; set; } = true;
 
-        [FieldDefinition(50, Label = "Sequential Track Order", HelpText = "Download tracks within an album in sequential order rather than randomly.", Type = FieldType.Checkbox, Section = "Album/Artist Organization")]
+        [FieldDefinition(48, Label = "Sequential Track Order", HelpText = "Download tracks within an album in sequential order rather than randomly.", Type = FieldType.Checkbox, Section = "Album/Artist Organization")]
         public bool SequentialTrackOrder { get; set; } = true;
         
-        [FieldDefinition(51, Label = "Randomize Album Order", HelpText = "Randomize the order in which albums are downloaded.", Type = FieldType.Checkbox, Section = "Album/Artist Organization")]
+        [FieldDefinition(49, Label = "Randomize Album Order", HelpText = "Randomize the order in which albums are downloaded.", Type = FieldType.Checkbox, Section = "Album/Artist Organization")]
         public bool RandomizeAlbumOrder { get; set; } = false;
         
         // High Volume Download Settings
-        [FieldDefinition(52, Label = "Enable High Volume Handling", HelpText = "Enables special handling for very large download queues to avoid rate limiting.", Type = FieldType.Checkbox, Section = "High Volume Handling")]
+        [FieldDefinition(50, Label = "Enable High Volume Handling", HelpText = "Enables special handling for very large download queues to avoid rate limiting.", Type = FieldType.Checkbox, Section = "High Volume Handling")]
         public bool EnableHighVolumeHandling { get; set; } = true;
 
-        [FieldDefinition(53, Label = "High Volume Threshold", HelpText = "Number of items in queue to trigger high volume mode.", Type = FieldType.Number, Section = "High Volume Handling")]
+        [FieldDefinition(51, Label = "High Volume Threshold", HelpText = "Number of items in queue to trigger high volume mode.", Type = FieldType.Number, Section = "High Volume Handling")]
         public int HighVolumeThreshold { get; set; } = 500;
 
-        [FieldDefinition(54, Label = "High Volume Session Minutes", HelpText = "Session duration for high volume mode (minutes).", Type = FieldType.Number, Section = "High Volume Handling")]
+        [FieldDefinition(52, Label = "High Volume Session Minutes", HelpText = "Session duration for high volume mode (minutes).", Type = FieldType.Number, Section = "High Volume Handling")]
         public int HighVolumeSessionMinutes { get; set; } = 90;
 
-        [FieldDefinition(55, Label = "High Volume Break Minutes", HelpText = "Break duration for high volume mode (minutes).", Type = FieldType.Number, Section = "High Volume Handling")]
+        [FieldDefinition(53, Label = "High Volume Break Minutes", HelpText = "Break duration for high volume mode (minutes).", Type = FieldType.Number, Section = "High Volume Handling")]
         public int HighVolumeBreakMinutes { get; set; } = 45;
         
         // Backward compatibility properties for millisecond delays
@@ -647,13 +659,6 @@ namespace NzbDrone.Core.Download.Clients.Tidal
             set => AlbumToAlbumDelayMax = value / 1000.0f;
         }
         
-        // Additional backward compatibility property that's no longer needed but referenced
-        public bool SimulateDelays
-        {
-            get => true; // Always enabled now through TrackToTrackDelay settings
-            set { } // No-op
-        }
-
         // Advanced security settings - not displayed in UI but used by code
         public bool RotateUserAgent { get; set; } = false;
         public bool VaryConnectionParameters { get; set; } = false;
@@ -729,6 +734,47 @@ namespace NzbDrone.Core.Download.Clients.Tidal
         [FieldDefinition(57, Label = "Enable Diagnostics", HelpText = "Save raw files for diagnostic purposes when errors occur", Type = FieldType.Checkbox, Section = "Diagnostics", Advanced = true)]
         public bool EnableDiagnostics { get; set; } = false;
 
+        [FieldDefinition(111, Label = "Process Queue With Natural Behavior", HelpText = "When enabled, the queue will be processed to simulate a human-like download pattern.", Type = FieldType.Checkbox, Section = "Natural Behavior")]
+        public bool ProcessQueueWithNaturalBehavior { get; set; } = true;
+
+        // Item Processing Delay
+        [FieldDefinition(112, Label = "Item Processing Delay", Unit = "ms", HelpText = "Delay between processing each download item. IMPACT: Lower values (0-300ms) = faster downloads but may cause search timeouts. Higher values (500-1000ms) = slower downloads but more stable operation. Set to 0 to disable.", Type = FieldType.Number, Section = "Performance Tuning", Advanced = true)]
+        public int ItemProcessingDelayMs { get; set; } = 500;
+
+        // Legacy properties - not shown in UI but used by code in other classes
+        [Obsolete("Use EnableNaturalBehavior and TrackToTrackDelay* settings instead")]
+        public bool DownloadDelay { get; set; } = false;
+
+        [Obsolete("Use TrackToTrackDelayMin instead")]
+        public float DownloadDelayMin 
+        { 
+            get => TrackToTrackDelayMin;
+            set => TrackToTrackDelayMin = value;
+        }
+
+        [Obsolete("Use TrackToTrackDelayMax instead")]
+        public float DownloadDelayMax
+        {
+            get => TrackToTrackDelayMax;
+            set => TrackToTrackDelayMax = value;
+        }
+
+        [Obsolete("Connection timeout is now managed automatically")]
+        public int ConnectionTimeoutSeconds { get; set; } = 60;
+
+        // Download Priority Settings
+        [FieldDefinition(60, Label = "Enable Priority System", HelpText = "Enables the download priority system for queue management.", Type = FieldType.Checkbox, Section = "Download Priorities")]
+        public bool EnablePrioritySystem { get; set; } = true;
+        
+        [FieldDefinition(61, Label = "Default New Release Priority", HelpText = "Priority to assign to new releases added to queue.", Type = FieldType.Select, SelectOptions = typeof(NzbDrone.Core.Download.Clients.Tidal.Interfaces.DownloadItemPriority), Section = "Download Priorities")]
+        public int DefaultNewReleasePriority { get; set; } = (int)NzbDrone.Core.Download.Clients.Tidal.Interfaces.DownloadItemPriority.High;
+        
+        [FieldDefinition(62, Label = "Default Backlog Priority", HelpText = "Priority to assign to older releases added to queue.", Type = FieldType.Select, SelectOptions = typeof(NzbDrone.Core.Download.Clients.Tidal.Interfaces.DownloadItemPriority), Section = "Download Priorities")]  
+        public int DefaultBacklogPriority { get; set; } = (int)NzbDrone.Core.Download.Clients.Tidal.Interfaces.DownloadItemPriority.Normal;
+        
+        [FieldDefinition(63, Label = "Default Missing Track Priority", HelpText = "Priority to assign when downloading missing tracks from an album.", Type = FieldType.Select, SelectOptions = typeof(NzbDrone.Core.Download.Clients.Tidal.Interfaces.DownloadItemPriority), Section = "Download Priorities")]
+        public int DefaultMissingTrackPriority { get; set; } = (int)NzbDrone.Core.Download.Clients.Tidal.Interfaces.DownloadItemPriority.Normal;
+
         public NzbDroneValidationResult Validate()
         {
             return new NzbDroneValidationResult(Validator.Validate(this));
@@ -760,6 +806,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal
                 // Basic behavior profile settings
                 SessionDurationMinutes != defaultSettings.SessionDurationMinutes ||
                 BreakDurationMinutes != defaultSettings.BreakDurationMinutes ||
+                ProcessQueueWithNaturalBehavior != defaultSettings.ProcessQueueWithNaturalBehavior ||
 
                 // Album/Artist Organization settings
                 CompleteAlbums != defaultSettings.CompleteAlbums ||
@@ -969,6 +1016,49 @@ namespace NzbDrone.Core.Download.Clients.Tidal
             {
                 _behaviorProfileService = new BehaviorProfileService();
             }
+        }
+    }
+
+    public enum SettingsSection
+    {
+        BasicSettings,
+        NaturalBehavior,
+        RateLimiting,
+        QueueManagement,
+        AdvancedSettings,
+        LegacySettings,
+        Diagnostics,
+        FileValidation,
+        AlbumArtistOrganization,
+        HighVolumeHandling,
+        StatusFiles,
+        CircuitBreaker,
+        PerformanceTuning,
+        LyricProviders
+    }
+
+    public static class SettingsSectionHelper
+    {
+        public static string GetSectionHeader(SettingsSection section)
+        {
+            return section switch
+            {
+                SettingsSection.BasicSettings => "Basic Settings",
+                SettingsSection.NaturalBehavior => "Natural Behavior",
+                SettingsSection.RateLimiting => "Rate Limiting",
+                SettingsSection.QueueManagement => "Queue Management",
+                SettingsSection.AdvancedSettings => "Advanced Settings",
+                SettingsSection.LegacySettings => "Legacy Settings",
+                SettingsSection.Diagnostics => "Diagnostics",
+                SettingsSection.FileValidation => "File Validation",
+                SettingsSection.AlbumArtistOrganization => "Album/Artist Organization",
+                SettingsSection.HighVolumeHandling => "High Volume Handling",
+                SettingsSection.StatusFiles => "Status Files",
+                SettingsSection.CircuitBreaker => "Circuit Breaker",
+                SettingsSection.PerformanceTuning => "Performance Tuning",
+                SettingsSection.LyricProviders => "Lyric Providers",
+                _ => string.Empty
+            };
         }
     }
 }
