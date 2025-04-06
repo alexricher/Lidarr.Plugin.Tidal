@@ -216,3 +216,6 @@ _temp_*/**/*
 ## Merge any idea folder
 */**/.idea
 *.iml
+
+# Cursor Rules
+.cursor/rules/

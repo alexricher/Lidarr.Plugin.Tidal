@@ -82,7 +82,7 @@ namespace NzbDrone.Core.Indexers.Tidal
         public int MaxConcurrentSearches { get; set; } = 5;
 
         [FieldDefinition(5, Label = "Max Requests Per Minute", Type = FieldType.Number, HelpText = "Maximum number of API requests per minute to avoid rate limiting", Advanced = true)]
-        public int MaxRequestsPerMinute { get; set; } = 50;
+        public int MaxRequestsPerMinute { get; set; } = 30;
 
         [FieldDefinition(6, Label = "Max Pages Per Search", Type = FieldType.Number, HelpText = "Maximum number of pages to retrieve per search", Advanced = true)]
         public int MaxPages { get; set; } = 3;

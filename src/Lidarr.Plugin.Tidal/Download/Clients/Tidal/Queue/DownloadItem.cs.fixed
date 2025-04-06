@@ -1,0 +1,12 @@
+                // Get the downloader directly from the TidalAPI singleton
+                if (NzbDrone.Plugin.Tidal.TidalAPI.Instance?.Client?.Downloader == null)
+                {
+                    throw new InvalidOperationException(\
+TidalAPI
+downloader
+is
+not
+available\);
+                }
+
+                var downloader = NzbDrone.Plugin.Tidal.TidalAPI.Instance.Client.Downloader;

@@ -20,29 +20,38 @@ using NzbDrone.Core.IndexerSearch.Definitions;
 using NzbDrone.Core.Music;
 using NzbDrone.Core.Download.Clients.Tidal;
 using NzbDrone.Core.Indexers.Exceptions;
+using Lidarr.Plugin.Tidal.Services.Country;
 
 namespace NzbDrone.Core.Indexers.Tidal
 {
     public class Tidal : HttpIndexerBase<TidalIndexerSettings>
     {
         public override string Name => "Tidal";
-        public override string Protocol => nameof(TidalDownloadProtocol);
+        public override string Protocol => "TidalDownloadProtocol";
         public override bool SupportsRss => false;
         public override bool SupportsSearch => true;
         public override int PageSize => 100;
         public override TimeSpan RateLimit => TimeSpan.FromSeconds(2);
 
-        private readonly ITidalProxy _tidalProxy;
+        private readonly NzbDrone.Core.Download.Clients.Tidal.ITidalProxy _tidalProxy;
         private readonly IAlbumService _albumService;
         private readonly ICacheManager _cacheManager;
+        private readonly ITidalRateLimitService _rateLimitService;
+        private readonly ITidalReleaseCache _releaseCache;
+        private new readonly IHttpClient _httpClient;
+        private new readonly Logger _logger;
+        private readonly ICountryManagerService _countryManagerService;
 
+        // Search queue management
         private static readonly ConcurrentQueue<SearchRequest> _searchQueue = new ConcurrentQueue<SearchRequest>();
         private static readonly SemaphoreSlim _queueSemaphore = new SemaphoreSlim(0);
-        private static readonly CancellationTokenSource _queueCts = new CancellationTokenSource();
-        private static bool _queueProcessorStarted = false;
-        private static readonly object _queueLock = new object();
-        private static readonly SemaphoreSlim _searchThrottleSemaphore = new SemaphoreSlim(4, 4); // Limit concurrent searches
-        private static readonly TimeSpan _searchTimeout = TimeSpan.FromMinutes(3); // 3 minute timeout for searches
+        private static readonly SemaphoreSlim _queueLock = new SemaphoreSlim(1, 1); // Add lock for queue operations
+        private static Task _searchProcessorTask;
+        private static readonly CancellationTokenSource _processorCts = new CancellationTokenSource();
+        private static bool _processorStarted = false;
+        private static readonly object _processorLock = new object(); // Lock for starting/stopping processor
+        private static readonly TimeSpan _searchTimeout = TimeSpan.FromMinutes(1);
+        private static readonly TimeSpan _searchQueueItemTimeout = TimeSpan.FromSeconds(30); // Shorter timeout per item
 
         private class SearchRequest
         {
@@ -52,39 +61,47 @@ namespace NzbDrone.Core.Indexers.Tidal
             public DateTime RequestTime { get; set; } = DateTime.UtcNow;
         }
 
-        public Tidal(ITidalProxy tidalProxy,
+        public Tidal(NzbDrone.Core.Download.Clients.Tidal.ITidalProxy tidalProxy,
             IHttpClient httpClient,
             IIndexerStatusService indexerStatusService,
             IConfigService configService,
             IParsingService parsingService,
             Logger logger,
             IAlbumService albumService,
-            ICacheManager cacheManager)
+            ICacheManager cacheManager,
+            ITidalRateLimitService rateLimitService,
+            ITidalReleaseCache releaseCache,
+            ICountryManagerService countryManagerService)
             : base(httpClient, indexerStatusService, configService, parsingService, logger)
         {
             _tidalProxy = tidalProxy;
             _albumService = albumService;
             _cacheManager = cacheManager;
+            _rateLimitService = rateLimitService;
+            _releaseCache = releaseCache;
+            _httpClient = httpClient;
+            _logger = logger;
+            _countryManagerService = countryManagerService;
         }
 
         public override IIndexerRequestGenerator GetRequestGenerator()
         {
-            if (string.IsNullOrEmpty(Settings.ConfigPath))
-            {
-                _logger.Warn("Config path is not set");
-                return new TidalRequestGenerator()
-                {
-                    Settings = Settings,
-                    Logger = _logger
-                };
-            }
-
             try
             {
                 // Log the ConfigPath to verify it's correct
-                _logger.Debug($"Initializing TidalAPI with config path: {Settings.ConfigPath}");
+                _logger.Debug($"Initializing TidalAPI with config path: {Settings?.ConfigPath ?? "null"}");
                 
-                if (!Directory.Exists(Settings.ConfigPath))
+                if (Settings == null)
+                {
+                    _logger.Error("Settings is null during initialization");
+                    return new TidalRequestGenerator(_rateLimitService)
+                    {
+                        Settings = new TidalIndexerSettings(), // Create default settings
+                        Logger = _logger
+                    };
+                }
+                
+                if (!string.IsNullOrWhiteSpace(Settings.ConfigPath) && !Directory.Exists(Settings.ConfigPath))
                 {
                     _logger.Warn($"Config directory doesn't exist: {Settings.ConfigPath}. Attempting to create it.");
                     try
@@ -94,19 +111,19 @@ namespace NzbDrone.Core.Indexers.Tidal
                     catch (Exception dirEx)
                     {
                         _logger.Error(dirEx, $"Failed to create config directory: {Settings.ConfigPath}");
-                        throw new DirectoryNotFoundException($"Config directory doesn't exist and couldn't be created: {Settings.ConfigPath}");
+                        // Continue with initialization - TidalAPI.Initialize will use a temporary directory
                     }
                 }
                 
                 // Create a safe request generator regardless of whether initialization succeeds
-                var requestGenerator = new TidalRequestGenerator()
+                var requestGenerator = new TidalRequestGenerator(_rateLimitService)
                 {
                     Settings = Settings,
                     Logger = _logger
                 };
 
                 // Initialize the API with proper null checks
-                TidalAPI.Initialize(Settings.ConfigPath, _httpClient, _logger);
+                TidalAPI.Initialize(Settings.ConfigPath, _httpClient, _logger, _countryManagerService);
                 
                 if (TidalAPI.Instance == null)
                 {
@@ -120,32 +137,25 @@ namespace NzbDrone.Core.Indexers.Tidal
                     return requestGenerator;
                 }
                 
-                // Ensure country manager is initialized
-                if (TidalCountryManager.Instance == null)
-                {
-                    _logger.Debug("Initializing TidalCountryManager during request generator creation");
-                    TidalCountryManager.Initialize(_httpClient, _logger);
-                }
-                
                 // Set the country code based on settings - with additional null checks
-                if (TidalCountryManager.Instance != null)
+                if (_countryManagerService != null)
                 {
                     try
                     {
                         // Create a TidalSettings instance to hold the country code
                         var downloadSettings = new NzbDrone.Core.Download.Clients.Tidal.TidalSettings
                         {
-                            CountrySelection = (int)NzbDrone.Core.Download.Clients.Tidal.TidalCountry.USA, // Default
+                            Country = (int)NzbDrone.Core.Download.Clients.Tidal.TidalCountry.Canada, // Default
                             CustomCountryCode = "" // Default
                         };
                         
                         // Update the country code manager
-                        TidalCountryManager.Instance.UpdateCountryCode(downloadSettings);
-                        _logger.Debug($"Updated country code to {TidalCountryManager.Instance.GetCountryCode()} in Tidal indexer");
+                        _countryManagerService.UpdateCountryCode(downloadSettings);
+                        _logger.Debug($"Updated country code to {_countryManagerService.GetCountryCode()} in Tidal indexer");
                     }
                     catch (Exception countryEx)
                     {
-                        _logger.Error(countryEx, "Error updating country code in TidalCountryManager");
+                        _logger.Error(countryEx, "Error updating country code in CountryManagerService");
                     }
                 }
                 
@@ -204,7 +214,7 @@ namespace NzbDrone.Core.Indexers.Tidal
                 
                 // Return a basic request generator that won't try to use TidalAPI.Instance
                 // which might be in an inconsistent state
-                return new TidalRequestGenerator()
+                return new TidalRequestGenerator(_rateLimitService)
                 {
                     Settings = Settings,
                     Logger = _logger
@@ -214,9 +224,12 @@ namespace NzbDrone.Core.Indexers.Tidal
 
         public override IParseIndexerResponse GetParser()
         {
-            return new TidalParser()
+            return new TidalParser
             {
-                Settings = Settings
+                Settings = Settings,
+                Logger = _logger,
+                ParsingService = _parsingService,
+                ReleaseCache = _releaseCache
             };
         }
 
@@ -336,176 +349,233 @@ namespace NzbDrone.Core.Indexers.Tidal
 
         private void EnsureQueueProcessorStarted()
         {
-            lock (_queueLock)
+            lock (_processorLock)
             {
-                if (!_queueProcessorStarted)
+                if (_processorStarted && (_searchProcessorTask == null || _searchProcessorTask.IsCompleted))
                 {
-                    _queueProcessorStarted = true;
-                    Task.Run(() => ProcessSearchQueue(_queueCts.Token));
+                    _logger.Warn("Search processor task completed unexpectedly. Restarting...");
+                    _processorStarted = false;
+                }
+
+                if (!_processorStarted)
+                {
+                    // Clear any pending requests from previous runs
+                    // CRITICAL FIX: This prevents stale search requests from blocking new searches
+                    ClearSearchQueue();
+                    
+                    _searchProcessorTask = Task.Run(ProcessSearchQueue);
+                    _processorStarted = true;
                     _logger.Debug("Search queue processor started");
                 }
             }
         }
 
-        private async Task ProcessSearchQueue(CancellationToken cancellationToken)
+        // CRITICAL FIX: New method to clear search queue
+        private void ClearSearchQueue()
         {
-            while (!cancellationToken.IsCancellationRequested)
+            try
             {
-                SearchRequest request = null;
-                bool throttleSemaphoreAcquired = false;
+                _queueLock.Wait();
                 
-                try
+                _logger.Debug("Clearing search queue");
+                // Drain the queue
+                while (_searchQueue.TryDequeue(out var pendingRequest))
                 {
-                    await _queueSemaphore.WaitAsync(cancellationToken);
-                    
-                    if (!_searchQueue.TryDequeue(out request))
-                    {
-                        continue; // Nothing to process, wait for next item
-                    }
-                    
-                    // Null check for request
-                    if (request == null)
-                    {
-                        _logger.Warn("Dequeued search request is null, skipping");
-                        continue;
-                    }
-                    
-                    // Check if the request is expired (older than 3 minutes)
-                    if ((DateTime.UtcNow - request.RequestTime).TotalMinutes > 3)
-                    {
-                        _logger.Warn($"Search request for '{request.SearchTerm}' expired, completing with empty result");
-                        request.CompletionSource?.TrySetResult(new List<ReleaseInfo>());
-                        continue;
-                    }
-                    
-                    // Check if any of the critical objects for search are null
-                    if (request.TokenSource?.Token == null || request.CompletionSource == null)
-                    {
-                        _logger.Error($"Invalid search request for '{request.SearchTerm}' (missing token or completion source)");
-                        request.CompletionSource?.TrySetResult(new List<ReleaseInfo>());
-                        continue;
-                    }
-                    
-                    // Check if the request has already been canceled
-                    if (request.TokenSource.IsCancellationRequested)
-                    {
-                        _logger.Debug($"Search request for '{request.SearchTerm}' was already canceled, skipping");
-                        request.CompletionSource.TrySetCanceled();
-                        continue;
-                    }
-                    
-                    // Throttle the number of concurrent searches
+                    // Complete any waiting tasks with empty results to avoid memory leaks
                     try
                     {
-                        throttleSemaphoreAcquired = await _searchThrottleSemaphore.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
-                        
-                        if (!throttleSemaphoreAcquired)
-                        {
-                            _logger.Warn($"Search throttle timeout exceeded for '{request.SearchTerm}', completing with empty result");
-                            request.CompletionSource.TrySetResult(new List<ReleaseInfo>());
-                            continue;
-                        }
-                        
-                        // Apply rate limiting
-                        await Task.Delay(RateLimit, cancellationToken);
-                        
-                        // Create fresh cancellation tokens
-                        using var timeoutCts = new CancellationTokenSource(_searchTimeout);
-                        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
-                            cancellationToken, 
-                            timeoutCts.Token, 
-                            request.TokenSource.Token);
-                        
-                        try
-                        {
-                            _logger.Debug($"Processing search for '{request.SearchTerm}'");
-                            
-                            // Extra check for cancellation before starting search
-                            linkedCts.Token.ThrowIfCancellationRequested();
-                            
-                            var results = await FetchReleasesFromIndexer(request.SearchTerm, linkedCts.Token);
-                            _logger.Debug($"Search for '{request.SearchTerm}' completed with {results.Count} results");
-                            
-                            // Use TrySetResult to avoid exceptions if the task has been cancelled
-                            request.CompletionSource.TrySetResult(results);
-                        }
-                        catch (OperationCanceledException)
-                        {
-                            if (timeoutCts.IsCancellationRequested)
-                            {
-                                _logger.Warn($"Search for '{request.SearchTerm}' timed out after {_searchTimeout.TotalMinutes} minutes");
-                                request.CompletionSource.TrySetResult(new List<ReleaseInfo>());
-                            }
-                            else if (request.TokenSource.IsCancellationRequested)
-                            {
-                                _logger.Debug($"Search for '{request.SearchTerm}' was cancelled by requester");
-                                request.CompletionSource.TrySetCanceled();
-                            }
-                            else
-                            {
-                                _logger.Debug($"Search for '{request.SearchTerm}' was cancelled");
-                                request.CompletionSource.TrySetCanceled();
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.Error(ex, $"Error processing search request for '{request.SearchTerm}'");
-                            
-                            // Set an empty result instead of propagating the error to let the UI continue gracefully
-                            request.CompletionSource.TrySetResult(new List<ReleaseInfo>());
-                        }
+                        pendingRequest.CompletionSource?.TrySetResult(Array.Empty<ReleaseInfo>());
                     }
                     catch (Exception ex)
                     {
-                        _logger.Error(ex, $"Error setting up search execution for '{request?.SearchTerm}'");
-                        request?.CompletionSource?.TrySetResult(new List<ReleaseInfo>());
+                        _logger.Debug(ex, "Error completing abandoned search request");
                     }
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    // Normal shutdown
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    _logger.Error(ex, "Error in search queue processor");
                     
-                    // If we have a specific request that failed, complete it with empty results
-                    request?.CompletionSource?.TrySetResult(new List<ReleaseInfo>());
-                    
-                    // Wait a bit before continuing to prevent error spam
+                    // Dispose any cancellation token sources
                     try
                     {
-                        await Task.Delay(1000, cancellationToken);
+                        pendingRequest.TokenSource?.Dispose();
                     }
-                    catch (OperationCanceledException)
+                    catch (Exception ex)
                     {
-                        break;
+                        _logger.Debug(ex, "Error disposing token source for abandoned search request");
                     }
                 }
-                finally
+                
+                // Reset semaphore to 0
+                while (_queueSemaphore.CurrentCount > 0)
                 {
-                    if (throttleSemaphoreAcquired)
+                    _queueSemaphore.Wait(0);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error clearing search queue");
+            }
+            finally
+            {
+                _queueLock.Release();
+            }
+        }
+
+        // CRITICAL FIX: Modified search queue processor
+        private async Task ProcessSearchQueue()
+        {
+            _logger.Debug("Search queue processor started");
+            
+            try
+            {
+                while (!_processorCts.IsCancellationRequested)
+                {
+                    SearchRequest request = null;
+                    
+                    try
                     {
+                        // Wait for an item to be available in the queue
+                        if (!await _queueSemaphore.WaitAsync(1000, _processorCts.Token))
+                        {
+                            continue;
+                        }
+                        
+                        // Acquire lock before dequeuing
+                        await _queueLock.WaitAsync(_processorCts.Token);
+                        
                         try
                         {
-                            _searchThrottleSemaphore.Release();
+                            // Try to get the next request from the queue
+                            if (!_searchQueue.TryDequeue(out request))
+                            {
+                                _logger.Debug("Search queue semaphore was signaled but queue is empty");
+                                _queueLock.Release();
+                                continue;
+                            }
+                        }
+                        finally
+                        {
+                            _queueLock.Release();
+                        }
+                        
+                        // Check if the request is already timed out or canceled
+                        if (request.TokenSource.IsCancellationRequested)
+                        {
+                            _logger.Debug($"Search request for '{request.SearchTerm}' was canceled before processing");
+                            request.CompletionSource.TrySetCanceled();
+                            continue;
+                        }
+                        
+                        // Check if request is too old (more than timeout threshold)
+                        if ((DateTime.UtcNow - request.RequestTime).TotalMilliseconds > _searchQueueItemTimeout.TotalMilliseconds)
+                        {
+                            _logger.Warn($"Search request for '{request.SearchTerm}' timed out in queue");
+                            request.CompletionSource.TrySetResult(Array.Empty<ReleaseInfo>());
+                            continue;
+                        }
+                        
+                        _logger.Info($"🎵 Beginning Tidal search for '{request.SearchTerm}'");
+                        
+                        // Use a timeout for the actual search operation
+                        using var searchTimeoutCts = new CancellationTokenSource(_searchQueueItemTimeout);
+                        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+                            request.TokenSource.Token, searchTimeoutCts.Token);
+                        
+                        try
+                        {
+                            // Perform the actual search
+                            var results = await FetchReleasesFromIndexer(request.SearchTerm, linkedCts.Token);
+                            
+                            // CRITICAL FIX: Add a small delay after completing the search operation
+                            // This ensures state is properly settled before processing another search
+                            await Task.Delay(100, CancellationToken.None);
+                            
+                            // Complete the task with the results 
+                            // Try multiple times with exponential backoff in case of task completion contention
+                            bool taskCompleted = false;
+                            int attempts = 0;
+                            while (!taskCompleted && attempts < 3)
+                            {
+                                taskCompleted = request.CompletionSource.TrySetResult(results);
+                                if (!taskCompleted)
+                                {
+                                    attempts++;
+                                    _logger.Warn($"Failed to complete task for search '{request.SearchTerm}', attempt {attempts}/3");
+                                    await Task.Delay(100 * attempts, CancellationToken.None);
+                                }
+                            }
+                            
+                            if (taskCompleted)
+                            {
+                                _logger.Info($"✅ Generated {results.Count} total release results from Tidal search");
+                            }
+                            else
+                            {
+                                _logger.Error($"Failed to complete search task for '{request.SearchTerm}' after 3 attempts");
+                            }
+                            
+                            // CRITICAL FIX: Add a small delay after setting the result to allow 
+                            // the task scheduler to process the completion callback
+                            await Task.Delay(100, CancellationToken.None);
+                        }
+                        catch (OperationCanceledException) when (searchTimeoutCts.IsCancellationRequested)
+                        {
+                            _logger.Warn($"Search for '{request.SearchTerm}' timed out");
+                            request.CompletionSource.TrySetResult(Array.Empty<ReleaseInfo>());
+                        }
+                        catch (OperationCanceledException) when (request.TokenSource.IsCancellationRequested)
+                        {
+                            _logger.Debug($"Search for '{request.SearchTerm}' was canceled");
+                            request.CompletionSource.TrySetCanceled();
                         }
                         catch (Exception ex)
                         {
-                            _logger.Debug(ex, "Error releasing search throttle semaphore");
+                            _logger.Error(ex, $"Error performing search for '{request.SearchTerm}'");
+                            request.CompletionSource.TrySetException(ex);
                         }
+                    }
+                    catch (OperationCanceledException) when (_processorCts.IsCancellationRequested)
+                    {
+                        // Normal cancellation, just exit
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Unhandled exception in search queue processor");
+                        
+                        // Complete the current request if it failed
+                        if (request?.CompletionSource != null && !request.CompletionSource.Task.IsCompleted)
+                        {
+                            request.CompletionSource.TrySetException(ex);
+                        }
+                        
+                        // Delay before continuing to avoid tight loop on persistent errors
+                        await Task.Delay(1000, _processorCts.Token);
+                    }
+                    finally
+                    {
+                        // Clean up the request resources
+                        request?.TokenSource?.Dispose();
                     }
                 }
             }
-            
-            _logger.Info("Search queue processor shutting down");
-            
-            // Complete any remaining requests
-            while (_searchQueue.TryDequeue(out var remainingRequest))
+            catch (OperationCanceledException) when (_processorCts.IsCancellationRequested)
             {
-                _logger.Debug($"Completing abandoned search request for '{remainingRequest?.SearchTerm}'");
-                remainingRequest?.CompletionSource?.TrySetCanceled();
+                // Normal processor shutdown
+                _logger.Debug("Search queue processor shutting down");
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Fatal error in search queue processor");
+            }
+            finally
+            {
+                lock (_processorLock)
+                {
+                    _processorStarted = false;
+                }
+                
+                _logger.Debug("Search queue processor stopped");
+                
+                // Clean up any remaining requests
+                ClearSearchQueue();
             }
         }
 
@@ -925,20 +995,59 @@ namespace NzbDrone.Core.Indexers.Tidal
             }
         }
         
+        /// <summary>
+        /// Gets country code from the settings, using the CountryManagerService
+        /// </summary>
+        /// <returns>Two-letter country code</returns>
         private string GetCountryCodeFromSettings()
         {
-            // Delegate to TidalCountryManager if possible
-            if (TidalAPI.Instance != null && TidalAPI.Instance?.Client?.ActiveUser != null)
+            try
             {
-                var countryCode = TidalAPI.Instance.Client.ActiveUser.CountryCode;
-                if (!string.IsNullOrEmpty(countryCode))
+                if (_countryManagerService == null)
                 {
-                    return countryCode;
+                    _logger.Warn("CountryManagerService is not available, using default country code US");
+                    return "US";
+                }
+                
+                var settings = Settings;
+                _countryManagerService.UpdateCountryCode(settings);
+                
+                return _countryManagerService.GetCountryCode();
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error retrieving country code from settings");
+                return "US"; // Default fallback
+            }
+        }
+
+        /// <summary>
+        /// Applies country code to HTTP requests
+        /// </summary>
+        /// <param name="request">The HTTP request to modify</param>
+        /// <returns>The modified request with country code added</returns>
+        protected HttpRequest ApplyCountryCode(HttpRequest request)
+        {
+            if (request == null)
+            {
+                return null;
+            }
+
+            // Apply the country code to the request if needed
+            try
+            {
+                if (_countryManagerService != null)
+                {
+                    _countryManagerService.AddCountryCodeToRequest(request);
+                    _logger.Debug($"Applied country code {_countryManagerService.GetCountryCode()} to request");
                 }
             }
-            
-            // Fallback to US if we can't determine country code
-            return "US";
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error applying country code to request");
+            }
+
+            return request;
         }
 
         // Override the base FetchIndexerResponse method

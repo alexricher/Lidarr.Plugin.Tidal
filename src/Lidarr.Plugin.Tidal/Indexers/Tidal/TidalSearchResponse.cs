@@ -1,4 +1,5 @@
 using Newtonsoft.Json;
+using TidalSharp.Data;
 
 namespace NzbDrone.Core.Indexers.Tidal;
 

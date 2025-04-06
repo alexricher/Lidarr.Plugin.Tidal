@@ -16,8 +16,8 @@ namespace NzbDrone.Core.Download.Clients.Tidal
             var releaseDate = !string.IsNullOrEmpty(rawReleaseDate) ? DateTime.Parse(rawReleaseDate, CultureInfo.InvariantCulture) : DateTime.MinValue;
 
             return GetFilledTemplate_Internal(template,
-                API.CompleteTitleFromPage(tidalPage),
-                API.CompleteTitleFromPage(tidalAlbum),
+                GetTitleFromPage(tidalPage),
+                GetTitleFromPage(tidalAlbum),
                 tidalAlbum["artist"]!["name"]!.ToString(),
                 tidalPage["artist"]!["name"]!.ToString(),
                 tidalAlbum["artists"]!.Select(a => a["name"]!.ToString()).ToArray(),
@@ -28,6 +28,27 @@ namespace NzbDrone.Core.Download.Clients.Tidal
                 tidalAlbum["numberOfVolumes"]!.ToString(),
                 releaseDate.Year.ToString(CultureInfo.InvariantCulture),
                 ext);
+        }
+        
+        // Helper method to extract the complete title from a JObject page
+        public static string GetTitleFromPage(JObject page)
+        {
+            if (page == null)
+                return "Unknown";
+                
+            // Extract title from the JSON object
+            string title = page["title"]?.ToString();
+            if (string.IsNullOrEmpty(title))
+                return "Unknown";
+                
+            // Check if there's a version info to append
+            string version = page["version"]?.ToString();
+            if (!string.IsNullOrEmpty(version))
+            {
+                return $"{title} ({version})";
+            }
+            
+            return title;
         }
 
         private static string GetFilledTemplate_Internal(string template, string title, string album, string albumArtist, string artist, string[] albumArtists, string[] artists, string track, string trackCount, string volume, string volumeCount, string year, string ext)

@@ -7,6 +7,10 @@ using NzbDrone.Common.Http;
 using NzbDrone.Core.IndexerSearch.Definitions;
 using NzbDrone.Plugin.Tidal;
 using System.Text;
+using System.Net;
+using System.Linq;
+using Lidarr.Plugin.Tidal.Services.CircuitBreaker;
+using Lidarr.Plugin.Tidal.Services.Logging;
 
 namespace NzbDrone.Core.Indexers.Tidal
 {
@@ -16,109 +20,35 @@ namespace NzbDrone.Core.Indexers.Tidal
         private const int DEFAULT_MAX_PAGES = 3;
         private const int DEFAULT_MAX_CONCURRENT_REQUESTS = 5;
         
+        // Use the proper CircuitBreaker implementation 
+        private static readonly ICircuitBreaker _searchCircuitBreaker;
+        
+        // Static constructor to initialize the circuit breaker
+        static TidalRequestGenerator()
+        {
+            // Create a circuit breaker with appropriate settings for search timeouts
+            var settings = new CircuitBreakerSettings
+            {
+                Name = "TidalSearch",
+                FailureThreshold = 5,
+                BreakDuration = TimeSpan.FromMinutes(5),
+                FailureTimeWindow = TimeSpan.FromMinutes(10),
+                StatusUpdateInterval = TimeSpan.FromMinutes(1)
+            };
+            
+            _searchCircuitBreaker = new CircuitBreaker(LogManager.GetLogger("TidalSearchCircuitBreaker"), settings);
+        }
+        
         public TidalIndexerSettings Settings { get; set; }
         public Logger Logger { get; set; }
         
-        private SemaphoreSlim _searchSemaphore;
-        private RateLimiter _rateLimiter;
+        private readonly ITidalRateLimitService _rateLimitService;
         
         public IHttpRequestInterceptor HttpCustomizer { get; private set; }
 
-        // Inside the constructor or if there's no constructor, add one 
-        public TidalRequestGenerator()
+        public TidalRequestGenerator(ITidalRateLimitService rateLimitService)
         {
-            // No initialization needed here anymore
-        }
-        
-        // Initialize rate limiters based on settings
-        private void InitializeRateLimiters()
-        {
-            try
-            {
-                var maxConcurrentSearches = Settings?.MaxConcurrentSearches ?? DEFAULT_MAX_CONCURRENT_REQUESTS;
-                var maxRequestsPerMinute = Settings?.MaxRequestsPerMinute ?? 50;
-                
-                Logger?.Debug($"🔧 Initializing rate limiters: MaxConcurrentSearches={maxConcurrentSearches}, MaxRequestsPerMinute={maxRequestsPerMinute}");
-                
-                _searchSemaphore = new SemaphoreSlim(maxConcurrentSearches, maxConcurrentSearches);
-                _rateLimiter = new RateLimiter(maxRequestsPerMinute, TimeSpan.FromMinutes(1));
-            }
-            catch (Exception ex)
-            {
-                Logger?.Error(ex, "Failed to initialize rate limiters");
-                
-                // Create defaults as fallback
-                _searchSemaphore = new SemaphoreSlim(DEFAULT_MAX_CONCURRENT_REQUESTS, DEFAULT_MAX_CONCURRENT_REQUESTS);
-                _rateLimiter = new RateLimiter(50, TimeSpan.FromMinutes(1));
-            }
-        }
-
-        private class RateLimiter
-        {
-            private readonly Queue<DateTime> _requestTimestamps = new Queue<DateTime>();
-            private readonly int _maxRequests;
-            private readonly TimeSpan _interval;
-            private readonly object _lock = new object();
-
-            public RateLimiter(int maxRequests, TimeSpan interval)
-            {
-                _maxRequests = maxRequests;
-                _interval = interval;
-            }
-
-            public async Task WaitForSlot()
-            {
-                int waitCount = 0;
-                DateTime startWait = DateTime.UtcNow;
-                
-                while (true)
-                {
-                    lock (_lock)
-                    {
-                        // Remove timestamps outside the window
-                        while (_requestTimestamps.Count > 0 && 
-                               DateTime.UtcNow - _requestTimestamps.Peek() > _interval)
-                        {
-                            _requestTimestamps.Dequeue();
-                        }
-
-                        // If we have room, add timestamp and proceed
-                        if (_requestTimestamps.Count < _maxRequests)
-                        {
-                            _requestTimestamps.Enqueue(DateTime.UtcNow);
-                            return;
-                        }
-                    }
-                    
-                    waitCount++;
-                    if (waitCount % 10 == 0) // Log every ~1 second of waiting
-                    {
-                        var waitTime = DateTime.UtcNow - startWait;
-                        // This will be logged by the caller
-                    }
-                    
-                    // Wait before checking again
-                    await Task.Delay(100);
-                }
-            }
-            
-            public int CurrentRequestCount
-            {
-                get
-                {
-                    lock (_lock)
-                    {
-                        // Remove timestamps outside the window
-                        while (_requestTimestamps.Count > 0 && 
-                               DateTime.UtcNow - _requestTimestamps.Peek() > _interval)
-                        {
-                            _requestTimestamps.Dequeue();
-                        }
-                        
-                        return _requestTimestamps.Count;
-                    }
-                }
-            }
+            _rateLimitService = rateLimitService;
         }
 
         public virtual IndexerPageableRequestChain GetRecentRequests()
@@ -127,7 +57,7 @@ namespace NzbDrone.Core.Indexers.Tidal
             
             // this is a lazy implementation, just here so that lidarr has something to test against when saving settings 
             var pageableRequests = new IndexerPageableRequestChain();
-            pageableRequests.Add(GetRequests("never gonna give you up"));
+            pageableRequests.Add(GetRequestsAsync("never gonna give you up", CancellationToken.None).GetAwaiter().GetResult());
 
             return pageableRequests;
         }
@@ -138,7 +68,7 @@ namespace NzbDrone.Core.Indexers.Tidal
             Logger.Info($"🔍 Creating album search request: '{searchQuery}'");
             
             var chain = new IndexerPageableRequestChain();
-            chain.AddTier(GetRequests(searchQuery));
+            chain.AddTier(GetRequestsAsync(searchQuery, CancellationToken.None).GetAwaiter().GetResult());
 
             return chain;
         }
@@ -148,12 +78,12 @@ namespace NzbDrone.Core.Indexers.Tidal
             Logger.Info($"🔍 Creating artist search request: '{searchCriteria.ArtistQuery}'");
             
             var chain = new IndexerPageableRequestChain();
-            chain.AddTier(GetRequests(searchCriteria.ArtistQuery));
+            chain.AddTier(GetRequestsAsync(searchCriteria.ArtistQuery, CancellationToken.None).GetAwaiter().GetResult());
 
             return chain;
         }
 
-        private IEnumerable<IndexerRequest> GetRequests(string searchParameters)
+        private async Task<IEnumerable<IndexerRequest>> GetRequestsAsync(string searchParameters, CancellationToken cancellationToken)
         {
             if (string.IsNullOrWhiteSpace(searchParameters))
             {
@@ -161,39 +91,73 @@ namespace NzbDrone.Core.Indexers.Tidal
                 return new List<IndexerRequest>(); // Return empty list
             }
             
-            // Initialize rate limiters if not already done
-            if (_searchSemaphore == null || _rateLimiter == null)
+            // Check if circuit breaker is open before proceeding
+            if (_searchCircuitBreaker.IsOpen())
             {
-                InitializeRateLimiters();
+                var reopenTime = _searchCircuitBreaker.GetReopenTime();
+                Logger?.Warn($"{LogEmojis.CircuitOpen} Circuit breaker for Tidal searches is OPEN. Searches temporarily disabled for {reopenTime.TotalMinutes:0.0} more minutes.");
+                return new List<IndexerRequest>(); // Return empty list when circuit breaker is open
             }
             
-            Logger?.Info($"🎵 Beginning Tidal search for '{searchParameters}'");
+            // Initialize rate limiters if not already done
+            try 
+            {
+                // Safely initialize rate limiters
+                var maxConcurrentSearches = Settings?.MaxConcurrentSearches ?? DEFAULT_MAX_CONCURRENT_REQUESTS;
+                var maxRequestsPerMinute = Settings?.MaxRequestsPerMinute ?? 50;
+                
+                Logger?.Debug($"🔧 Initializing rate limiters: MaxConcurrentSearches={maxConcurrentSearches}, MaxRequestsPerMinute={maxRequestsPerMinute}");
+                
+                // Ensure rate limit service is available
+                if (_rateLimitService == null)
+                {
+                    Logger?.Error("Rate limit service is null - this is a dependency injection issue");
+                    return new List<IndexerRequest>(); // Return empty list
+                }
+                
+                _rateLimitService.Initialize(maxConcurrentSearches, maxRequestsPerMinute);
+            }
+            catch (Exception ex)
+            {
+                Logger?.Error(ex, "Failed to initialize rate limiters");
+                // Continue regardless of initialization error - service will use default values
+            }
+            
+            Logger?.Debug($"🎵 Beginning Tidal search for '{searchParameters}'");
             
             // Create a list to hold our requests
             var requests = new List<IndexerRequest>();
             
+            // Only acquire the semaphore once for the entire operation
+            bool semaphoreAcquired = false;
             try
             {
-                // Acquire semaphore to limit concurrent searches - with timeout
-                Logger?.Debug($"⏳ Waiting for search semaphore (current usage: {_searchSemaphore.CurrentCount}/{Settings?.MaxConcurrentSearches ?? DEFAULT_MAX_CONCURRENT_REQUESTS})");
+                // We'll use a timeout to avoid hanging forever
+                var timeoutTask = Task.Delay(TimeSpan.FromSeconds(90), cancellationToken);
                 
-                bool semaphoreAcquired = false;
-                try
+                // Log that we're waiting for the semaphore
+                Logger?.Info($"⏳ Waiting for rate limit slot to search: {searchParameters}");
+                var waitTask = _rateLimitService.WaitForSlot(cancellationToken);
+                
+                var completedTask = await Task.WhenAny(waitTask, timeoutTask);
+                if (completedTask == timeoutTask)
                 {
-                    semaphoreAcquired = _searchSemaphore.Wait(TimeSpan.FromSeconds(30));
-                    if (!semaphoreAcquired)
-                    {
-                        Logger?.Error("Failed to acquire search semaphore after 30 seconds");
-                        return requests; // Return empty list
-                    }
+                    // Timeout message
+                    Logger?.Warn($"Timed out after 90 seconds waiting for rate limit semaphore. Search will be skipped: {searchParameters}");
                     
-                    Logger?.Debug("✅ Search semaphore acquired");
+                    // Record the timeout with circuit breaker
+                    _searchCircuitBreaker.RecordFailure(new TimeoutException($"Search timeout for: {searchParameters}"));
+                    
+                    return requests; // Return empty list on timeout
                 }
-                catch (Exception ex)
-                {
-                    Logger?.Error(ex, "Error waiting for search semaphore");
-                    return requests; // Return empty list
-                }
+                
+                // If we get here, we acquired the semaphore
+                semaphoreAcquired = true;
+                
+                // Record success with circuit breaker
+                _searchCircuitBreaker.RecordSuccess();
+                
+                Logger?.Debug("✅ Search semaphore acquired");
                 
                 try
                 {
@@ -216,75 +180,62 @@ namespace NzbDrone.Core.Indexers.Tidal
                         return requests;
                     }
                     
-                    // Check if token is expired or needs refresh
-                    bool needsRefresh = true;
-                    
+                    // CRITICAL FIX: Don't wait for token refresh if we hold the semaphore
+                    // Instead, run a quick check and skip refresh if it might block
+                    bool needsRefresh = false;
                     try
                     {
-                        needsRefresh = DateTime.UtcNow > TidalAPI.Instance.Client.ActiveUser.ExpirationDate;
+                        // Only refresh if token is definitely expired (within 5 min of expiry)
+                        if (TidalAPI.Instance.Client.ActiveUser.ExpirationDate != DateTime.MinValue)
+                        {
+                            needsRefresh = DateTime.UtcNow.AddMinutes(5) > TidalAPI.Instance.Client.ActiveUser.ExpirationDate;
+                            if (needsRefresh)
+                            {
+                                // IMPROVED: Instead of just skipping, initiate a non-blocking background token refresh
+                                Logger?.Info($"Token expires soon ({TidalAPI.Instance.Client.ActiveUser.ExpirationDate}), initiating background refresh");
+                                
+                                // Start background refresh without awaiting it - this will overlap with the search
+                                // but won't block the critical path
+                                _ = Task.Run(async () => {
+                                    try
+                                    {
+                                        // Release our semaphore during token refresh to avoid deadlocks
+                                        if (semaphoreAcquired && _rateLimitService != null)
+                                        {
+                                            try
+                                            {
+                                                _rateLimitService.Release();
+                                                Logger?.Debug("✅ Temporarily released search semaphore for token refresh");
+                                                semaphoreAcquired = false;
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                Logger?.Error(ex, "Error releasing search semaphore for token refresh");
+                                            }
+                                        }
+                                        
+                                        // Attempt token refresh
+                                        Logger?.Debug("🔑 Beginning background token refresh");
+                                        await TidalAPI.Instance.Client.ForceRefreshToken();
+                                        Logger?.Info("🔑 Successfully refreshed Tidal token in background");
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        Logger?.Error(ex, "Background token refresh failed");
+                                    }
+                                });
+                                
+                                Logger?.Debug("🔑 Continuing with search while token refreshes in background");
+                                // Continue with existing token for current search - it might still work
+                                // and the background task will refresh it for future searches
+                            }
+                        }
                     }
                     catch (Exception ex)
                     {
-                        Logger?.Warn(ex, "Error checking token expiration - will refresh token");
+                        Logger?.Warn(ex, "Error checking token expiration - continuing anyway");
                     }
                     
-                    if (needsRefresh)
-                    {
-                        // ensure we always have an accurate expiration date
-                        if (TidalAPI.Instance.Client.ActiveUser.ExpirationDate == DateTime.MinValue)
-                        {
-                            Logger?.Debug("🔄 Token expiration date not set, forcing refresh");
-                            try
-                            {
-                                var refreshTask = TidalAPI.Instance.Client.ForceRefreshToken();
-                                if (!refreshTask.Wait(TimeSpan.FromSeconds(30)))
-                                {
-                                    Logger?.Error("Token refresh timed out after 30 seconds");
-                                    return requests;
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                Logger?.Error(ex, "Error refreshing token");
-                                return requests;
-                            }
-                        }
-                        else
-                        {
-                            Logger?.Debug("🔄 Token expired, refreshing");
-                            try
-                            {
-                                var loginTask = TidalAPI.Instance.Client.IsLoggedIn();
-                                if (!loginTask.Wait(TimeSpan.FromSeconds(30)))
-                                {
-                                    Logger?.Error("Login check timed out after 30 seconds");
-                                    return requests;
-                                }
-                                
-                                if (!loginTask.Result)
-                                {
-                                    Logger?.Error("Login check failed - not logged in");
-                                    return requests;
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                Logger?.Error(ex, "Error calling IsLoggedIn (for token refresh)");
-                                return requests;
-                            }
-                        }
-                        
-                        // Check token expiration again 
-                        if (TidalAPI.Instance.Client.ActiveUser == null || 
-                            string.IsNullOrEmpty(TidalAPI.Instance.Client.ActiveUser.AccessToken))
-                        {
-                            Logger?.Error("After refresh, access token is still missing - login failed");
-                            return requests;
-                        }
-                        
-                        Logger?.Debug($"✨ Token refreshed, new expiration: {TidalAPI.Instance.Client.ActiveUser.ExpirationDate}");
-                    }
-
                     // Create requests for each page
                     var maxPages = Settings?.MaxPages ?? DEFAULT_MAX_PAGES;
                     var pageSize = Settings?.PageSize ?? DEFAULT_PAGE_SIZE;
@@ -293,29 +244,10 @@ namespace NzbDrone.Core.Indexers.Tidal
                     
                     for (var page = 0; page < maxPages; page++)
                     {
-                        // Wait for rate limiter before making request - with timeout
-                        var startWait = DateTime.UtcNow;
-                        
-                        try
+                        // CRITICAL FIX: Check cancellation between pages
+                        if (cancellationToken.IsCancellationRequested)
                         {
-                            var waitTask = _rateLimiter.WaitForSlot();
-                            if (!waitTask.Wait(TimeSpan.FromSeconds(30)))
-                            {
-                                Logger?.Warn($"Rate limiter wait timed out for page {page+1}");
-                                continue; // Skip this page
-                            }
-                            
-                            var waitTime = DateTime.UtcNow - startWait;
-                            
-                            if (waitTime.TotalMilliseconds > 500)
-                            {
-                                Logger?.Debug($"⏱️ Rate limiter delayed request for {waitTime.TotalSeconds:F1}s (current usage: {_rateLimiter.CurrentRequestCount}/{Settings?.MaxRequestsPerMinute ?? 50} requests/min)");
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            Logger?.Error(ex, $"Error waiting for rate limiter for page {page+1}");
-                            continue; // Skip this page
+                            break;
                         }
                         
                         var data = new Dictionary<string, string>()
@@ -323,122 +255,92 @@ namespace NzbDrone.Core.Indexers.Tidal
                             ["query"] = searchParameters,
                             ["limit"] = $"{pageSize}",
                             ["types"] = "albums,tracks",
-                            ["offset"] = $"{page * pageSize}",
+                            ["offset"] = $"{page * pageSize}"
                         };
-
-                        Logger?.Debug($"📦 Creating request for page {page+1} with offset {page * pageSize}");
                         
-                        string url;
-                        try
+                        // Use the correct property name PreferredCountryCode instead of CountryCode
+                        var countryCode = Settings?.PreferredCountryCode;
+                        if (!string.IsNullOrEmpty(countryCode))
                         {
-                            url = TidalAPI.Instance!.GetAPIUrl("search", data);
-                        }
-                        catch (Exception ex)
-                        {
-                            Logger?.Error(ex, "Error generating API URL");
-                            continue; // Skip this page if URL generation fails
+                            Logger?.Debug($"🌍 Using country code: {countryCode}");
+                            data["countryCode"] = countryCode;
                         }
                         
-                        if (string.IsNullOrEmpty(url))
+                        // Build the URL with parameters - don't use ApiBaseUrl which doesn't exist
+                        string urlBase = "https://api.tidal.com/v1";
+                        var endpoint = $"{urlBase}/search";
+                        
+                        // Create the query string manually without using Select
+                        var queryParams = string.Join("&", data.Keys
+                            .Select(key => $"{WebUtility.UrlEncode(key)}={WebUtility.UrlEncode(data[key])}"));
+                        var url = $"{endpoint}?{queryParams}";
+                        
+                        var httpRequest = new HttpRequest(url, HttpAccept.Json);
+                        
+                        // Add authorization
+                        if (TidalAPI.Instance?.Client?.ActiveUser != null)
                         {
-                            Logger?.Error("Generated API URL is empty");
-                            continue; // Skip this page
+                            string token = TidalAPI.Instance.Client.ActiveUser.AccessToken;
+                            if (!string.IsNullOrEmpty(token))
+                            {
+                                httpRequest.Headers.Add("Authorization", $"Bearer {token}");
+                            }
+                            else
+                            {
+                                Logger?.Error("Access token is null or empty - cannot add authorization header");
+                            }
                         }
                         
-                        IndexerRequest req;
-                        try
+                        // Add other required headers - don't use ApiKey which doesn't exist
+                        string apiKey = "yU5qiQJ8dual5kkF"; // Default Tidal web API key
+                        httpRequest.Headers.Add("X-Tidal-Token", apiKey);
+                        
+                        // Use Customize instead of In for HttpCustomizer
+                        if (HttpCustomizer != null)
                         {
-                            req = new IndexerRequest(url, HttpAccept.Json);
-                            req.HttpRequest.Method = System.Net.Http.HttpMethod.Get;
-                        }
-                        catch (Exception ex)
-                        {
-                            Logger?.Error(ex, "Error creating HTTP request");
-                            continue; // Skip this page
+                            HttpCustomizer.PreRequest(httpRequest);
                         }
                         
-                        try
-                        {
-                            if (TidalAPI.Instance?.Client?.ActiveUser == null)
-                            {
-                                Logger?.Error("ActiveUser is null when adding Authorization header");
-                                continue; // Skip this page
-                            }
-                            
-                            var activeUser = TidalAPI.Instance.Client.ActiveUser;
-                            if (activeUser.TokenType == null || activeUser.AccessToken == null)
-                            {
-                                Logger?.Error("Tidal token or token type is null");
-                                continue; // Skip this request if token information is missing
-                            }
-
-                            var tokenType = activeUser.TokenType;
-                            var accessToken = activeUser.AccessToken;
-                            
-                            try
-                            {
-                                if (req.HttpRequest.Headers.ContainsKey("Authorization"))
-                                {
-                                    req.HttpRequest.Headers.Remove("Authorization");
-                                }
-                                
-                                var auth = $"{tokenType} {accessToken}";
-                                req.HttpRequest.Headers.Add("Authorization", auth);
-                            }
-                            catch (Exception ex)
-                            {
-                                Logger?.Error(ex, "Error setting authorization header");
-                                continue; // Skip this request if adding auth headers fails
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            Logger?.Error(ex, "Error setting authorization header");
-                            continue; // Skip this request if adding auth headers fails
-                        }
-
-                        requests.Add(req);
+                        Logger?.Debug($"📄 Created request for page {page+1}: {url}");
+                        requests.Add(new IndexerRequest(httpRequest));
                     }
                     
-                    Logger?.Info($"✅ Completed all search requests for '{searchParameters}' - {requests.Count} requests created");
+                    Logger?.Info($"✅ Completed all search requests for '{searchParameters}' - {requests.Count} requests created (PageSize={pageSize}, MaxPages={maxPages}, SearchTypes=albums,tracks)");
                 }
-                finally
+                catch (Exception ex)
                 {
-                    // Make sure we release the semaphore
-                    if (semaphoreAcquired)
-                    {
-                        try
-                        {
-                            _searchSemaphore.Release();
-                            Logger?.Debug("🔓 Search semaphore released");
-                        }
-                        catch (Exception ex)
-                        {
-                            Logger?.Error(ex, "Error releasing search semaphore");
-                        }
-                    }
+                    _searchCircuitBreaker.RecordFailure(ex);
+                    Logger?.Error(ex, $"Error creating search requests for '{searchParameters}': {ex.Message}");
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                Logger?.Debug($"Search for '{searchParameters}' was cancelled");
+                throw; // Propagate cancellation
             }
             catch (Exception ex)
             {
-                Logger?.Error(ex, $"❌ Error generating search requests for '{searchParameters}'");
-                
-                // Clean up semaphore if needed
-                try
+                // Record any unexpected errors with circuit breaker
+                _searchCircuitBreaker.RecordFailure(ex);
+                Logger?.Error(ex, $"Unexpected error during search setup for '{searchParameters}': {ex.Message}");
+            }
+            finally
+            {
+                // Always release the semaphore if we acquired it
+                if (semaphoreAcquired && _rateLimitService != null)
                 {
-                    if (_searchSemaphore != null && _searchSemaphore.CurrentCount < (Settings?.MaxConcurrentSearches ?? DEFAULT_MAX_CONCURRENT_REQUESTS))
+                    try
                     {
-                        _searchSemaphore.Release();
-                        Logger?.Debug("🔓 Search semaphore released during exception handling");
+                        _rateLimitService.Release();
+                        Logger?.Debug("✅ Released search semaphore");
                     }
-                }
-                catch
-                {
-                    // Ignore cleanup errors
+                    catch (Exception ex)
+                    {
+                        Logger?.Error(ex, "Error releasing search semaphore");
+                    }
                 }
             }
             
-            // Return all the requests we created
             return requests;
         }
     }

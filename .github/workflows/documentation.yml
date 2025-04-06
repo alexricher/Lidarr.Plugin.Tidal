@@ -1,0 +1,322 @@
+name: Documentation
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'docs/**'
+      - '.github/workflows/documentation.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'docs/**'
+      - '.github/workflows/documentation.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 # Needed for git history
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: 6.0.x
+
+      - name: Install DocFX
+        run: dotnet tool install -g docfx
+
+      - name: Create directories
+        run: |
+          mkdir -p docfx_project
+          mkdir -p temp_docs/reports
+
+      - name: Initialize DocFX
+        run: |
+          cd docfx_project
+          docfx init -q
+
+      - name: Configure DocFX
+        run: |
+          dotnet new tool-manifest --force
+          dotnet tool install --local powershell
+          dotnet pwsh -Command {
+            $docfxJsonPath = "docfx_project/docfx.json"
+            $docfxConfig = Get-Content -Path $docfxJsonPath -Raw | ConvertFrom-Json
+            
+            # Create new objects for configuration sections
+            $newMetadata = $docfxConfig.metadata[0].PSObject.Copy()
+            $newSrc = $newMetadata.src[0].PSObject.Copy()
+            
+            # Update metadata section
+            $newSrc.files = @("src/**.csproj")
+            $newSrc.src = ".."
+            $newMetadata.src = @($newSrc)
+            
+            # Create build metadata
+            $docfxConfig.build | Add-Member -MemberType NoteProperty -Name "globalMetadata" -Value @{
+                "_appTitle" = "Lidarr Tidal Plugin Documentation"
+                "_appFooter" = "Lidarr Tidal Plugin Documentation"
+                "_enableSearch" = "true"
+                "_enableNewTab" = "true"
+            } -Force
+            
+            # Update metadata
+            $docfxConfig.metadata = @($newMetadata)
+            
+            # Save updated config
+            $docfxConfig | ConvertTo-Json -Depth 10 | Set-Content -Path $docfxJsonPath
+          }
+
+      - name: Build projects with XML documentation
+        run: |
+          find src -name "*.csproj" -type f | while read -r csproj; do
+            echo "Building $csproj with XML documentation..."
+            dotnet build "$csproj" /p:GenerateDocumentationFile=true
+          done
+
+      - name: Generate API metadata
+        run: |
+          cd docfx_project
+          docfx metadata
+
+      - name: Copy documentation files
+        run: |
+          # Create article structure
+          mkdir -p docfx_project/articles
+          mkdir -p docfx_project/architecture
+          mkdir -p docfx_project/guides
+          mkdir -p docfx_project/images
+          
+          # Copy docs
+          if [ -f "docs/ARCHITECTURE.md" ]; then
+            cp docs/ARCHITECTURE.md docfx_project/architecture/overview.md
+          else
+            echo "# Architecture Overview\n\nThis page documents the architecture of the Lidarr Tidal Plugin." > docfx_project/architecture/overview.md
+          fi
+          
+          # Create TOCs
+          echo "- name: Overview
+  href: overview.md" > docfx_project/architecture/toc.yml
+          
+          # Copy guides
+          if [ -f "docs/FIXING_LINTING_ERRORS.md" ]; then
+            cp docs/FIXING_LINTING_ERRORS.md docfx_project/guides/linting-guide.md
+          fi
+          if [ -f "docs/DOCUMENTATION_SETUP.md" ]; then
+            cp docs/DOCUMENTATION_SETUP.md docfx_project/guides/documentation-setup.md
+          fi
+          if [ -f "docs/DOCUMENTATION_STANDARDS.md" ]; then
+            cp docs/DOCUMENTATION_STANDARDS.md docfx_project/guides/documentation-standards.md
+          fi
+          
+          # Create default guides if they don't exist
+          if [ ! -f "docfx_project/guides/dev-guide.md" ]; then
+            echo "# Developer Guide
+
+This guide provides information for developers who want to contribute to the Lidarr Tidal Plugin.
+
+## Setting Up Development Environment
+
+1. Clone the repository
+2. Install dependencies
+3. Build the project
+
+## Architecture
+
+See the [Architecture Overview](../architecture/overview.md) for information about the plugin's design.
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Submit a pull request
+
+## Coding Standards
+
+- Follow C# coding conventions
+- Document public APIs with XML comments
+- Write unit tests for new functionality" > docfx_project/guides/dev-guide.md
+          fi
+          
+          if [ ! -f "docfx_project/guides/user-guide.md" ]; then
+            echo "# User Guide
+
+This guide provides information for users of the Lidarr Tidal Plugin.
+
+## Installation
+
+1. Download the latest release
+2. Extract the files to your Lidarr plugins directory
+3. Restart Lidarr
+
+## Configuration
+
+1. Open Lidarr
+2. Go to Settings > Download Clients
+3. Click \"+\"
+4. Select \"Tidal\"
+5. Enter your Tidal credentials
+6. Save
+
+## Usage
+
+1. Search for albums or artists
+2. Select the quality profile
+3. Add to library
+
+## Troubleshooting
+
+### Common Issues
+
+- **Authentication failed**: Check your Tidal credentials
+- **Download fails**: Check your internet connection and Tidal subscription
+- **Plugin not loading**: Verify plugin compatibility with your Lidarr version" > docfx_project/guides/user-guide.md
+          fi
+          
+          # Create guides TOC
+          echo "- name: Developer Guide
+  href: dev-guide.md
+- name: User Guide
+  href: user-guide.md
+- name: Documentation Setup
+  href: documentation-setup.md
+- name: Documentation Standards
+  href: documentation-standards.md
+- name: Fixing Linting Errors
+  href: linting-guide.md" > docfx_project/guides/toc.yml
+          
+          # Create articles TOC
+          echo "- name: Introduction
+  href: intro.md
+- name: Architecture
+  href: ../architecture/overview.md
+- name: Developer Guide
+  href: ../guides/dev-guide.md
+- name: User Guide
+  href: ../guides/user-guide.md" > docfx_project/articles/toc.yml
+          
+          # Create intro
+          echo "# Introduction to Lidarr Tidal Plugin
+
+The Lidarr Tidal Plugin extends Lidarr's functionality by adding support for the Tidal music streaming service.
+
+## Features
+
+- Search for albums and tracks on Tidal
+- Download music from Tidal
+- Manage your Tidal library through Lidarr
+
+## Getting Started
+
+See the [User Guide](../guides/user-guide.md) for installation and usage instructions.
+
+## For Developers
+
+If you're a developer looking to contribute, see the [Developer Guide](../guides/dev-guide.md)." > docfx_project/articles/intro.md
+          
+          # Create main TOC
+          echo "- name: Articles
+  href: articles/
+- name: Architecture
+  href: architecture/
+- name: Guides
+  href: guides/
+- name: API Documentation
+  href: api/" > docfx_project/toc.yml
+          
+          # Create index
+          echo "# Lidarr Tidal Plugin Documentation
+
+Welcome to the documentation for the Lidarr Tidal Plugin, which extends Lidarr to support the Tidal music streaming service.
+
+## Getting Started
+
+- [Introduction](articles/intro.md)
+- [User Guide](guides/user-guide.md)
+- [Developer Guide](guides/dev-guide.md)
+
+## API Reference
+
+Full [API Documentation](api/index.md) is available for developers.
+
+## Architecture
+
+Learn about the [system architecture](architecture/overview.md) and design principles.
+
+## Contributing
+
+Contributions are welcome! See the [Developer Guide](guides/dev-guide.md) for information on getting started." > docfx_project/index.md
+
+      - name: Build documentation
+        run: |
+          cd docfx_project
+          docfx build
+
+      - name: Generate documentation issues report
+        run: |
+          dotnet pwsh -Command {
+            $missingDocsReport = "temp_docs/reports/missing_docs.md"
+            Set-Content -Path $missingDocsReport -Value "# Missing Documentation Report`n`nThis report identifies classes, methods, and properties that are missing XML documentation.`n"
+            
+            $csFiles = Get-ChildItem -Path "src" -Filter "*.cs" -Recurse
+            
+            foreach ($csFile in $csFiles) {
+                $fileContent = Get-Content $csFile.FullName -Raw
+                $fileName = $csFile.Name
+                $missingDocs = @()
+                
+                # Check for public classes without documentation
+                $classMatches = [regex]::Matches($fileContent, '(?<!\/\/\/\s*<summary>[\s\S]*?)public\s+(class|interface|enum|struct)\s+(\w+)')
+                foreach ($match in $classMatches) {
+                    $missingDocs += "- Class/Interface: $($match.Groups[2].Value)"
+                }
+                
+                # Check for public methods without documentation
+                $methodMatches = [regex]::Matches($fileContent, '(?<!\/\/\/\s*<summary>[\s\S]*?)public\s+[\w<>\[\]]+\s+(\w+)\s*\(')
+                foreach ($match in $methodMatches) {
+                    $missingDocs += "- Method: $($match.Groups[1].Value)"
+                }
+                
+                # Check for public properties without documentation
+                $propMatches = [regex]::Matches($fileContent, '(?<!\/\/\/\s*<summary>[\s\S]*?)public\s+[\w<>\[\]]+\s+(\w+)\s*\{')
+                foreach ($match in $propMatches) {
+                    $missingDocs += "- Property: $($match.Groups[1].Value)"
+                }
+                
+                if ($missingDocs.Count -gt 0) {
+                    Add-Content -Path $missingDocsReport -Value "## $fileName`n"
+                    foreach ($item in $missingDocs) {
+                        Add-Content -Path $missingDocsReport -Value "$item"
+                    }
+                    Add-Content -Path $missingDocsReport -Value "`n"
+                }
+            }
+          }
+
+      - name: Upload documentation issues report
+        if: success()
+        uses: actions/upload-artifact@v3
+        with:
+          name: documentation-issues-report
+          path: temp_docs/reports/missing_docs.md
+
+      - name: Upload documentation site
+        if: success()
+        uses: actions/upload-artifact@v3
+        with:
+          name: documentation-site
+          path: docfx_project/_site
+
+      - name: Deploy to GitHub Pages
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./docfx_project/_site 

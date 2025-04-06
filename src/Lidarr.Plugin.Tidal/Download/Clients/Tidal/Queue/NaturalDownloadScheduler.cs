@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using NLog;
+using NzbDrone.Core.Download.Clients.Tidal.Interfaces;
 
 namespace NzbDrone.Core.Download.Clients.Tidal.Queue
 {
@@ -26,10 +27,16 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
 
         public NaturalDownloadScheduler(DownloadTaskQueue queue, IUserBehaviorSimulator behaviorSimulator, TidalSettings settings, Logger logger)
         {
-            _queue = queue;
-            _behaviorSimulator = behaviorSimulator;
-            _settings = settings;
-            _logger = logger;
+            _queue = queue ?? throw new ArgumentNullException(nameof(queue), "Download queue cannot be null");
+            _behaviorSimulator = behaviorSimulator ?? new UserBehaviorSimulator(logger);
+            _settings = settings ?? new TidalSettings 
+            {
+                // Default values for critical settings
+                SessionDurationMinutes = 60,
+                BreakDurationMinutes = 15,
+                EnableNaturalBehavior = false
+            };
+            _logger = logger ?? LogManager.GetCurrentClassLogger();
         }
 
         /// <summary>
@@ -48,18 +55,18 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
             {
                 return null;
             }
-            
+
             // Check current download rate against MaxDownloadsPerHour
             var downloadRate = GetCurrentDownloadRate();
             if (_settings.MaxDownloadsPerHour > 0 && downloadRate >= _settings.MaxDownloadsPerHour)
             {
                 _logger.Info($"🛑 Max download rate reached: {downloadRate}/{_settings.MaxDownloadsPerHour} per hour. Delaying next download.");
-                
+
                 // Calculate delay based on 1-hour sliding window
                 // Wait for the oldest download to fall out of the 1-hour window, plus a small random delay
                 var delayMinutes = Math.Max(1, _random.Next(3, 10));
                 await Task.Delay(TimeSpan.FromMinutes(delayMinutes), token);
-                
+
                 // Try again after the delay
                 return await GetNextItem(token);
             }
@@ -82,7 +89,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                     // Default to first item in queue
                     selectedItem = allItems[0];
                 }
-                
+
                 // Check if we should skip this track
                 if (_behaviorSimulator.ShouldSkipTrack(_settings))
                 {
@@ -118,7 +125,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
         private IDownloadItem GetNextItemWithArtistGrouping(IDownloadItem[] items)
         {
             // Update artist groups with current queue items
-            UpdateArtistGroups(items);
+            UpdateArtistGroups(items.ToList());
 
             // Find the artist with the most items in the queue
             string selectedArtist = null;
@@ -147,7 +154,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
         /// <summary>
         /// Updates the artist groups based on current queue items
         /// </summary>
-        private void UpdateArtistGroups(IDownloadItem[] items)
+        private void UpdateArtistGroups(IList<IDownloadItem> items)
         {
             lock (_lock)
             {
@@ -179,15 +186,15 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
             // If natural behavior is disabled, always process
             if (!_settings.EnableNaturalBehavior)
                 return true;
-                
+
             // Check for time-of-day restrictions
             if (_settings.TimeOfDayAdaptation)
             {
                 DateTime now = DateTime.Now;
                 int currentHour = now.Hour;
-                
+
                 bool isWithinActiveHours = false;
-                
+
                 // Handle case where active hours span midnight
                 if (_settings.ActiveHoursStart > _settings.ActiveHoursEnd)
                 {
@@ -202,7 +209,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                     // This means active from 8AM to 10PM
                     isWithinActiveHours = currentHour >= _settings.ActiveHoursStart && currentHour < _settings.ActiveHoursEnd;
                 }
-                
+
                 if (!isWithinActiveHours)
                 {
                     // Log this only occasionally to avoid log spam
@@ -212,7 +219,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                         _logger.Info($"⏰ Outside active hours ({_settings.ActiveHoursStart:00}:00 - {_settings.ActiveHoursEnd:00}:00). Queue processing paused until {nextActiveTime:HH:mm}");
                         _lastInactiveHoursLogTime = DateTime.UtcNow;
                     }
-                    
+
                     return false;
                 }
             }
@@ -222,11 +229,11 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
             {
                 return IsWithinHighVolumeSession();
             }
-            
+
             // Check if we're within a standard session
             return IsWithinActiveSession();
         }
-        
+
         /// <summary>
         /// Gets the next time when active hours will begin
         /// </summary>
@@ -235,10 +242,10 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
             DateTime now = DateTime.Now;
             int currentHour = now.Hour;
             DateTime today = now.Date;
-            
+
             // Create a starting point at today's active start hour
             DateTime activeStartToday = today.AddHours(_settings.ActiveHoursStart);
-            
+
             // Case where active hours span midnight
             if (_settings.ActiveHoursStart > _settings.ActiveHoursEnd)
             {
@@ -282,10 +289,10 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
             // If high volume mode is not enabled, return false
             if (!_settings.EnableHighVolumeHandling)
                 return false;
-                
+
             // Get the current time
             DateTime now = DateTime.UtcNow;
-            
+
             // Check if we're in a session or break period
             if (_lastSessionStart == DateTime.MinValue)
             {
@@ -294,16 +301,16 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                 _lastBreakStart = DateTime.MinValue;
                 return true;
             }
-            
+
             TimeSpan sessionDuration = TimeSpan.FromMinutes(_settings.HighVolumeSessionMinutes);
             TimeSpan breakDuration = TimeSpan.FromMinutes(_settings.HighVolumeBreakMinutes);
-            
+
             // Check if we're still in the session
             if (_lastSessionStart != DateTime.MinValue && (now - _lastSessionStart) <= sessionDuration)
             {
                 return true;
             }
-            
+
             // If we've exceeded session duration, check if we need to start a break
             if (_lastBreakStart == DateTime.MinValue || (now - _lastBreakStart) >= breakDuration)
             {
@@ -313,7 +320,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                 _logger.Info($"Starting new high volume session at {now:HH:mm:ss}");
                 return true;
             }
-            
+
             // We're in a break period
             var remainingBreak = breakDuration - (now - _lastBreakStart);
             if (_lastBreakLogTime == DateTime.MinValue || (now - _lastBreakLogTime).TotalMinutes >= 5)
@@ -321,10 +328,10 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                 _logger.Info($"⏸️ On high volume break ({_settings.HighVolumeBreakMinutes} min). Resuming in {remainingBreak.TotalMinutes:F1} minutes");
                 _lastBreakLogTime = now;
             }
-            
+
             return false;
         }
-        
+
         /// <summary>
         /// Checks if we are currently within an active standard session
         /// </summary>
@@ -333,10 +340,10 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
             // If natural behavior is disabled, always return true
             if (!_settings.EnableNaturalBehavior)
                 return true;
-                
+
             // Get the current time
             DateTime now = DateTime.UtcNow;
-            
+
             // Check if we're in a session or break period
             if (_lastSessionStart == DateTime.MinValue)
             {
@@ -345,16 +352,16 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                 _lastBreakStart = DateTime.MinValue;
                 return true;
             }
-            
+
             TimeSpan sessionDuration = TimeSpan.FromMinutes(_settings.SessionDurationMinutes);
             TimeSpan breakDuration = TimeSpan.FromMinutes(_settings.BreakDurationMinutes);
-            
+
             // Check if we're still in the session
             if (_lastSessionStart != DateTime.MinValue && (now - _lastSessionStart) <= sessionDuration)
             {
                 return true;
             }
-            
+
             // If we've exceeded session duration, check if we need to start a break
             if (_lastBreakStart == DateTime.MinValue)
             {
@@ -364,7 +371,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                 _logger.Info($"🛑 Session ended after {sessionDuration.TotalMinutes:F1} minutes. Taking a break for {breakDuration.TotalMinutes:F1} minutes");
                 return false;
             }
-            
+
             // Check if break is over
             if ((now - _lastBreakStart) >= breakDuration)
             {
@@ -374,7 +381,7 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                 _logger.Info($"▶️ Break complete. Starting new download session at {now:HH:mm:ss}");
                 return true;
             }
-            
+
             // We're in a break period
             var remainingBreak = breakDuration - (now - _lastBreakStart);
             if (_lastBreakLogTime == DateTime.MinValue || (now - _lastBreakLogTime).TotalMinutes >= 5)
@@ -382,8 +389,8 @@ namespace NzbDrone.Core.Download.Clients.Tidal.Queue
                 _logger.Info($"⏸️ On break ({_settings.BreakDurationMinutes} min). Resuming in {remainingBreak.TotalMinutes:F1} minutes");
                 _lastBreakLogTime = now;
             }
-            
+
             return false;
         }
     }
-} 
+}
