@@ -1,6 +1,61 @@
 # Lidarr Tidal Plugin Documentation
 
-Welcome to the documentation for the Lidarr Tidal Plugin. This documentation provides comprehensive information about the plugin's architecture, development, and usage.
+This directory contains documentation for the Lidarr Tidal Plugin project.
+
+## Documentation Categories
+
+### Tagging Implementation
+
+A comprehensive set of documentation for implementing audio tagging functionality is available in the [tagging](./tagging) directory:
+
+- [Tagging Overview](./tagging/TAGGING_OVERVIEW.md) - Main reference guide for the tagging implementation
+- [Project Organization](./tagging/TAGGING_PROJECT_ORGANIZATION.md) - Code structure and organization
+- [Proof of Concept](./tagging/TAGGING_PROOF_OF_CONCEPT.md) - Initial implementation approach
+- [Integration Guide](./tagging/TAGGING_INTEGRATION_GUIDE.md) - Integration with Lidarr and Tidal
+- [Settings Integration](./tagging/TAGGING_SETTINGS_INTEGRATION.md) - UI settings implementation
+- [Testing Strategy](./tagging/TAGGING_TESTING_STRATEGY.md) - Comprehensive testing approach
+- [Milestone Plan](./tagging/TAGGING_MILESTONE_PLAN.md) - Implementation timeline and tasks
+
+### Core Documentation
+
+- [Architecture](./ARCHITECTURE.md) - Overview of the plugin architecture
+- [Roadmap](./ROADMAP.md) - Overall project roadmap and planned features
+- [Documentation Standards](./DOCUMENTATION_STANDARDS.md) - Standards for documenting code and features
+- [Performance Optimization](./PERFORMANCE_OPTIMIZATION.md) - Performance optimization techniques
+
+### Download System
+
+- [Download Item Documentation](./DownloadItem_Documentation.md) - Details on the download item system
+- [Download Task Queue Documentation](./DownloadTaskQueue_Documentation.md) - Download queue implementation
+- [Queue Persistence](./Queue_Persistence.md) - Queue persistence implementation
+- [Rate Limiting](./Rate_Limiting.md) - Rate limiting implementation
+
+### User Interface
+
+- [Usage Guide](./USAGE_GUIDE.md) - Guide for using the Tidal plugin
+- [Tidal Download Viewer](./TidalDownloadViewer.md) - Documentation for the download viewer
+
+### Testing
+
+- [Unit Tests Plan](./UNIT_TESTS_PLAN.md) - Plan for implementing unit tests
+- [TDD](./TDD.md) - Test-driven development approach
+- [Unit Tests Startup Plan](./UNIT_TESTS_STARTUP_PLAN.md) - Plan for setting up unit tests
+
+### Features
+
+- [Natural Behavior](./NaturalBehavior.md) - Natural behavior simulation
+- [Smart Pagination](./SMART_PAGINATION.md) - Smart pagination implementation
+- [Status Files](./STATUS_FILES.md) - Status files implementation
+- [Lyrics Research](./LYRICS_RESEARCH.md) - Research on lyrics integration
+
+### Refactoring
+
+- [Refactoring](./REFACTORING.md) - Refactoring guidelines
+- [Refactoring Summary](./REFACTORING_SUMMARY.md) - Summary of refactoring efforts
+
+## Contributing
+
+When adding new documentation, please follow the [Documentation Standards](./DOCUMENTATION_STANDARDS.md) and update this README to include references to your new documents.
 
 ## Documentation Tools
 
